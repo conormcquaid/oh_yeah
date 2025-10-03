@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.5)
+
+set(CMAKE_BUILD_TYPE Debug)
+
+project( fast1 )
+find_package( OpenCV REQUIRED )
+include_directories( ${OpenCV_INCLUDE_DIRS} )
+add_executable( fast1  ocv_fast2.cpp )
+add_executable( slow1  ocv_slow.cpp )
+add_executable( slower ocv_slower.cpp )
+add_executable( param  ocv_parameterized.cpp )
+target_link_libraries( fast1  ${OpenCV_LIBS} )
+target_link_libraries( slow1  ${OpenCV_LIBS} )
+target_link_libraries( slower ${OpenCV_LIBS} )
+target_link_libraries( param  ${OpenCV_LIBS} )
