@@ -2,8 +2,8 @@
 
 const int camWidth = 640;
 const int camHeight = 480;
-const int dispWidth = 1080;
-const int dispHeight = 720;
+const int dispWidth = 1920;
+const int dispHeight = 1200;
 
 int framenum;
 
@@ -17,9 +17,13 @@ int sumn(int n){
    }
 }
 
+// we can assume the higher number camera is not the built-in?
+int camera_count(void);
+
+
 int main() {
     // 1. Open the default camera (index 0)
-    cv::VideoCapture cap(0); 
+    cv::VideoCapture cap(camera_count() - 1); 
 
     if (!cap.isOpened()) {
         std::cerr << "Error: Could not open webcam." << std::endl;
@@ -105,7 +109,7 @@ int main() {
         
         cv::Size outputSize(dispWidth, dispHeight);
         //cv::resize(processed_frame, finalFrame, outputSize);
-        cv::resize(frame, finalFrame, outputSize);
+        cv::resize(buf2, finalFrame, outputSize);
         
         if(!once){
          
@@ -116,7 +120,7 @@ int main() {
         
         cv::imshow("CORRIDOR", finalFrame);
 
-        cv::imshow("debug", buf2);
+        cv::imshow("debug", frame);
 
         // Exit loop if 'q' is pressed
         if (cv::waitKey(1) == 'q') {
@@ -132,3 +136,16 @@ int main() {
     return 0;
 }
 
+int camera_count(void){
+    int device_count = 0;
+    while (true) {
+        cv::VideoCapture camera(device_count, cv::CAP_V4L);
+        if (!camera.isOpened()) {
+            break; // No more cameras found
+        }
+        camera.release(); // Release the camera to free resources
+        device_count++;
+    }
+    std::cout << "Number of connected cameras: " << device_count << std::endl;
+    return 0;
+}
