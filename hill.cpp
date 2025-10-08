@@ -19,7 +19,7 @@ int camWidth   = 1280;
 int camHeight  = 720;
 int dispWidth  = 1920;
 int dispHeight = 1080;
-int depthMax = 64; // min value must be 1, so depthMax cannot exceed 254
+int depthMax = 64; 
 bool verbose = false;
 bool debugWindow = false;
 int filterOption = 0;
@@ -60,7 +60,7 @@ EffOfEcksWye algorithms[N_ALGORITHMS]={
 
 int main(int argc, char** argv) {
 
-    progname = argv[0];
+    progname = argv[0]; // remember for usage()
 
     load_options(argc, argv);
 
@@ -126,18 +126,32 @@ int main(int argc, char** argv) {
     std::vector<std::vector<int>> pixDepth(frame.rows, std::vector<int>(frame.cols));
 
 
+    cv::Mat thumbnail(frame.rows, frame.cols, CV_8UC1, cv::Scalar(0));
     // get buffer size and memoize depth function
+    int depthMaxEmpirical = 0;
     for(int c = 0; c < frame.cols; c++){
 
         for(int r = 0; r < frame.rows; r++){
 
             int d = pEffOfEcksWye(r,c,param);
+            depthMaxEmpirical = (d > depthMaxEmpirical) ? d : depthMaxEmpirical;
+            if(d < 1) d = 1; // algorithms shouls alreaday take care of this
             bufSize += d; 
             // cache depth calculation
             pixDepth[r][c] = d;
-
         }
     }
+    // now we can scale thumbnail grayscale
+    for(int c = 0; c < frame.cols; c++){
+        for(int r = 0; r < frame.rows; r++){
+            thumbnail.at<uchar>(r,c) = 255 * pixDepth[r][c] / depthMaxEmpirical;
+        }
+    }
+    // Display the image
+    cv::resize(thumbnail, thumbnail, cv::Size(480, 320));
+    cv::imwrite("thumbnail.png", thumbnail);
+    cv::imshow("Thumbnail", thumbnail);
+
 
     cv::Mat lineBuffer(bufSize + depthMax + depthMax, 1, mtype);
 
@@ -169,9 +183,7 @@ int main(int argc, char** argv) {
             std::cerr<< "Capture failed" << std::endl;
             exit(0);
         }
-
-//        if(verbose)std::cout << framenum << "\r" << std::flush;
-
+        // try to optimize out .at<> calls
         if(       frame.isContinuous() && 
                   lineBuffer.isContinuous() &&
                   renderBuf.isContinuous() ){
@@ -185,7 +197,7 @@ int main(int argc, char** argv) {
 
                     int z = pixDepth[r][c];
                     
-                    int pixelIndex = c + r * frame.cols;
+                    int pixelIndex = r * frame.cols + c;
 
                     pBuf[bufStart + (framenum % z)] = pSrc[pixelIndex];
 
@@ -201,8 +213,7 @@ int main(int argc, char** argv) {
             
                 for(int r = 0; r < frame.rows; r++){
 
-                    int z = pixDepth[r][c];//pEffOfEcksWye(x,y);
-                    // 1 + int(depthMax * cos(M_PI * x /camWidth - M_PI/2) * cos(M_PI * y/camHeight - M_PI/2)); 
+                    int z = pixDepth[r][c];
 
                     // stash this frame's pixel
                     lineBuffer.at<cv::Vec3b>(bufStart + (framenum % z), 0) = frame.at<cv::Vec3b>(r,c);
@@ -211,11 +222,20 @@ int main(int argc, char** argv) {
                     renderBuf.at<cv::Vec3b>(r,c) = lineBuffer.at<cv::Vec3b>(bufStart + ((framenum + 1)% z), 0);
 
                     bufStart += z;
-
-                    //std::cout << "(" << x << "," << y << ") = " << z << "\t sum to date: " << bufStart << std::endl;
                 }
             }
          }
+
+        //     0: Flips the image vertically (around the x-axis).
+        //     1: Flips the image horizontally (around the y-axis), creating a mirror effect.
+        //    -1: Flips the image both horizontally and vertically (equivalent to a 180-degree rotation).
+
+        if(mirrorHorizontal){
+            cv::flip(renderBuf, renderBuf, 1);
+        }   
+        if(mirrorVertical){
+            cv::flip(renderBuf, renderBuf, 0);
+        }
 
         cv::Size outputSize( dispWidth, dispHeight);
         cv::resize(renderBuf, final, outputSize);
@@ -240,8 +260,18 @@ int main(int argc, char** argv) {
 
 
         // Exit loop if 'q' is pressed
-        if (cv::waitKey(1) == 'q') {
+        int key = cv::waitKey(1);
+        if (key == 'Q' || key == 'q' || key == 27) {
+            
             break;
+        }
+        if(key == 'm'){
+            mirrorHorizontal = !mirrorHorizontal;
+            std::cout << "Mirror horizontal " << (mirrorHorizontal ? "ON" : "OFF") << std::endl;
+        }
+        if(key == 'M'){
+            mirrorVertical = !mirrorVertical;
+            std::cout << "Mirror vertical " << (mirrorVertical ? "ON" : "OFF") << std::endl;
         }
 
         once = true;
