@@ -22,8 +22,15 @@ int camera_count(void);
 
 
 int main() {
+
+    cv::VideoCapture cap("/dev/video2", cv::CAP_V4L);
+    if (!cap.isOpened()) {
+        std::cerr << "Error: Could not open NAMED webcam." << std::endl;
+        return -1;
+    }
+
     // 1. Open the default camera (index 0)
-    cv::VideoCapture cap(camera_count() - 1); 
+//    cv::VideoCapture cap(camera_count() - 1); 
 
     if (!cap.isOpened()) {
         std::cerr << "Error: Could not open webcam." << std::endl;

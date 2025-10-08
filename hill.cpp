@@ -28,6 +28,7 @@ int fps;
 bool mirrorHorizontal = false;
 bool mirrorVertical = false;
 int param = 0;
+std::string  video_device_name = "/dev/video0";
 
 
 
@@ -66,7 +67,7 @@ int main(int argc, char** argv) {
 
     // TODO: a means of counting the available cameras
     // and an option for choosing one
-    cv::VideoCapture cap(0); 
+    cv::VideoCapture cap(video_device_name.c_str()); 
 
     if (!cap.isOpened()) {
         std::cerr << "Error: Could not open webcam." << std::endl;
@@ -331,6 +332,7 @@ void usage(void){
     std::cout << "2D funhouse mirror effect" << std::endl << std::endl;
     std::cout << "Hit 'Q' to quit" << std::endl << std::endl;
     std::cout << "-v\tVerbose" << std::endl;
+    std::cout << "-n\tName of input device. Defaults to /dev/video0" << std::endl;
     std::cout << "-g\tShow debug window (raw camera feed)" << std::endl;
     std::cout << "-d\tSet maximum pixel history depth [1-254]" << std::endl;
     std::cout << "-w\tSet camera width" << std::endl;
@@ -365,12 +367,16 @@ void load_options(int argc, char** argv){
         usage();
     }
 
-    while((opt = getopt(argc, argv, "a:gvd:w:W:h:H:f:p:")) != -1){
+    while((opt = getopt(argc, argv, "a:gvd:w:W:h:H:f:p:n:")) != -1){
         switch(opt){
             case 'v':
             verbose = true;
             break;
- 
+
+            case 'n':
+            video_device_name = optarg;
+            break;
+
             case 'a':
             algorithm = atoi(optarg);
             assertInRange(algorithm, 1, N_ALGORITHMS);
