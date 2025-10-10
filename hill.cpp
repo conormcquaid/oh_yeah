@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <chrono>
 #include <iomanip>
+#include <filesystem>
 //// To find out capabilities of the camera...
 //// v4l2-ctl --list-formats-ext
 //// To compile with profiling enabled...
@@ -31,6 +32,27 @@ int param = 0;
 std::string  video_device_name = "/dev/video0";
 
 
+int enumerate_cameras(void){
+    int dev_mask = 0;
+    bool no_cameras = true;
+    std::string dev_path = "/dev/";
+    for (const auto & entry : std::filesystem::directory_iterator(dev_path)) {
+        std::string filename = entry.path().filename().string();
+        if (filename.find("video") == 0) {
+            if(no_cameras){
+                if(verbose)std::cout << "Available cameras:" << std::endl;
+                no_cameras = false;
+            }
+            
+            dev_mask |= ( 1<< std::stoi(filename.back()) );
+            if(verbose) std::cout  << entry.path() << std::endl;
+        }
+        if(no_cameras){
+            if(verbose)std::cout << "No cameras found" << std::endl;   
+        }
+    }
+    return dev_mask;
+}
 
 bool assertInRange(int n, int min, int max);
 void load_options(int argc, char** argv);
