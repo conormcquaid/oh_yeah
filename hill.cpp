@@ -1,4 +1,8 @@
 #include <opencv2/opencv.hpp>
+// #include <opencv2/imgproc.hpp>
+// #include <opencv2/videoio.hpp>
+
+// #include <opencv2/highgui.hpp>
 #include <cmath>
 #include <unistd.h>
 #include <chrono>
@@ -6,6 +10,9 @@
 #include <filesystem>
 #include <bitset>
 #include <string>
+#include <queue>
+#include <thread>
+#include <mutex>
 #include "PerlinNoise.hpp"
 
 
@@ -41,36 +48,14 @@ double   variation = 0.0;
 std::string  video_device_name = "/dev/video0";
 
 
-int enumerate_cameras(void){
-    int dev_mask = 0;
-    bool no_cameras = true;
-    std::string dev_path = "/dev/";
-    for (const auto & entry : std::filesystem::directory_iterator(dev_path)) {
-        std::string filename = entry.path().filename().string();
-        if (filename.find("video") == 0) {
-            if(no_cameras){
-                if(verbose)std::cout << "Available cameras:" << std::endl;
-                no_cameras = false;
-            }
-            
-            //dev_mask |= ( 1<< std::stoi(filename.back(), nullptr) );
-            dev_mask |= ( 1 << '0' - filename.back() ); // feels icky
-            if(verbose) std::cout  << entry.path() << std::endl;
-        }
-
-    }        
-    if(no_cameras){
-        if(verbose)std::cout << "No cameras found" << std::endl;   
-    }
-    return dev_mask;
-}
-
+int  enumerate_cameras(void);
+void mouse_callback(int event, int x, int y, int flags, void* userdata);
 bool assertInRange(int n, int min, int max);
 void load_options(int argc, char** argv);
 void usage(void);
 
 // we can choose diffferent algortithms (if we can think them up ☺ )
-#define N_ALGORITHMS 13
+#define N_ALGORITHMS 18
 int algorithm = 1;
 int algo_cosX_x_cosY(int r, int c, int depth_param, double variation);
 int algo_Inv_cosX_x_cosY(int r, int c, int depth_param, double variation);
@@ -83,6 +68,12 @@ int algo_cos_y(int r, int c, int depth_param, double variation);
 int algo_inv_cos_x(int r, int c, int depth_param, double variation);
 int algo_inv_cos_y(int r, int c, int depth_param, double variation);
 int algo_perlin(int r, int c, int depth_param, double variation);
+int algo_concentric(int r, int c, int depth_param, double variation);
+int algo_sine(int r, int c, int depth_param, double variation);
+int algo_sine2(int r, int c, int depth_param, double variation);
+int algo_sine2_highfreq(int r, int c, int depth_param, double variation);
+int algo_spiral(int r, int c, int depth_param, double variation);
+int algo_multi(int r, int c, int depth_param, double variation, int mode);
 
 typedef int (*EffOfEcksWye)(int x, int y, int depth_param, double variation);
 EffOfEcksWye pEffOfEcksWye = algo_cosX_x_cosY;
@@ -100,9 +91,27 @@ EffOfEcksWye algorithms[N_ALGORITHMS]={
     algo_inv_cos_y,
     algo_perlin,
     algo_perlin,
-    algo_perlin
-
+    algo_perlin,
+    algo_concentric,
+    algo_sine,
+    algo_sine2,
+    algo_sine2_highfreq,
+    algo_spiral
 };
+
+// video capture thread
+std::queue<cv::Mat> frame_queue;
+std::mutex mtx;
+
+void captureTask(cv::VideoCapture& cap){
+    cv::Mat frame;
+    while(cap.isOpened()){
+        cap >> frame;
+        if(frame.empty()){ break; }
+        std::lock_guard<std::mutex> lock(mtx);
+        frame_queue.push(frame.clone());
+    }
+}
 
 
 int main(int argc, char** argv) {
@@ -123,7 +132,7 @@ int main(int argc, char** argv) {
     }
     if(verbose) std::cout << "Camera bitmask: " << std::bitset<8>(cams) << std::endl;
 
-    cv::VideoCapture cap(video_device_name.c_str()); 
+    cv::VideoCapture cap(video_device_name.c_str());//, cv::CAP_GSTREAMER); <-- gstreamer not built in?
 
     if (!cap.isOpened()) {
         std::cerr << "Error: Could not open webcam." << std::endl;
@@ -177,9 +186,14 @@ int main(int argc, char** argv) {
     //cv::Mat hill(camHeight, camWidth, CV_8UC3, cv::Scalar(0, 0, 0));
 
 
+    //attach mouse handler to main window
+    cv::setMouseCallback("hill", mouse_callback, NULL);
 
 
     std::vector<std::vector<int>> pixDepth(frame.rows, std::vector<int>(frame.cols));
+
+    // producer thread
+    //std::thread captureThread(captureTask, std::ref(cap));
 
     bool quit = false;
     while(!quit){
@@ -256,6 +270,18 @@ int main(int argc, char** argv) {
                 std::cerr<< "Capture failed" << std::endl;
                 exit(0);
             }
+
+            // {
+            //     std::lock_guard<std::mutex> lock(mtx);
+            //     if(!frame_queue.empty()){
+            //         frame = frame_queue.front();
+            //         frame_queue.pop();
+            //     }else{
+            //         // no new frame, skip processing
+            //         //if(verbose) std::cout << "No new frame available" << std::endl;
+            //         continue;
+            //     }
+            // }
             // try to optimize out .at<> calls
             if(  frame.isContinuous() && 
                  lineBuffer.isContinuous() &&
@@ -357,9 +383,9 @@ int main(int argc, char** argv) {
 
                 lineBuffer.release();
             }
-            if(key == '+' || key == '-'){
+            if(key == '+' || key == '-' || key == '=' || key == '_'){
 
-                if(key == '+'){
+                if(key == '+' || key == '='){
                     param++;
                 }else{
                     param--;
@@ -378,15 +404,22 @@ int main(int argc, char** argv) {
             once = true;
 
             // calculate FPS
+            static double FPS_A[16] = {0.0};
+            static int FPS_i = 0;
             auto end_frame = std::chrono::high_resolution_clock::now();
             if(verbose){
                 std::chrono::duration<double, std::milli> frame_duration = end_frame - start_frame;
+                FPS_A[FPS_i++ % 16] = frame_duration.count();
+                double FPS = 0.0;
+                for(int i = 0; i < 16; i++) FPS += FPS_A[i];
+                FPS /= 16.0;
                 //std::cout << std::fixed << std::setprecision(0)   << framenum << "\tFPS: " << 1000/frame_duration.count()  << "\r" << std::flush;
 
-                std::cout << std::fixed << std::setprecision(0)   << framenum << "\tFPS: " << 1000/frame_duration.count()  << "\r" << std::flush;
+                std::cout << std::fixed << std::setprecision(0)   << framenum << "\tFPS: " << FPS  << "\r" << std::flush;
             }
         }// end while restart
     }// end while restart
+    //captureThread.join();
 
     return 0;
 }
@@ -477,6 +510,97 @@ int algo_perlin(int r, int c, int depth_param, double variation){
     return  1 + depthMax * noise;      
 
 }   
+int algo_concentric(int r, int c, int depth_param, double variation){
+    return algo_multi(r, c, depth_param, variation, 1);
+}
+int algo_sine(int r, int c, int depth_param, double variation){
+    return algo_multi(r, c, depth_param, variation, 2);
+}
+int algo_sine2(int r, int c, int depth_param, double variation){
+    return algo_multi(r, c, depth_param, variation, 3);
+}
+int algo_sine2_highfreq(int r, int c, int depth_param, double variation){
+    return algo_multi(r, c, depth_param, variation, 4);
+}
+int algo_spiral(int r, int c, int depth_param, double variation){
+    return algo_multi(r, c, depth_param, variation, 5);
+}
+int algo_multi(int r, int c, int depth_param, double variation, int mode){
+
+    int mid = depthMax / 2;
+    if(mid < 1) mid = 1;
+    if(mid > depthMax) mid = depthMax;
+
+    switch(mode){
+        case 0:
+            // random pattern
+            return std::rand() % depthMax + 1;
+            
+            break;
+        case 1:
+            // concentric circles
+            {
+                int cx = camWidth / 2;
+                int cy = camHeight / 2;
+                double rr =  1.0 * (r - cy) / camWidth;
+                double cc =  1.0 * (c - cx) / camHeight;
+                double dist = sin(42 * sqrt((rr * rr) + (cc * cc))); // <-- orig
+
+                return static_cast<int>(mid + dist * mid);//static_cast<uchar>(fmod(dist, 256));
+            }
+            break;
+        case 2:
+            // sine wave pattern
+            {
+                double val = mid + mid * sin(2 * M_PI * r / 32.0);
+                if(val < 0) val = 0;
+                if(val > 255) val = 255;
+                return (int)val;
+            }
+            break;
+        case 3:
+            // combined sine wave pattern
+            {
+                double val = mid + mid * sin(1 * M_PI * r / 32.0) * cos(1 * M_PI * c / 32.0);
+                if(val < 0) val = 0;
+                if(val > 255) val = 255;
+                return(int)val;
+            }
+            break;
+            case 4:
+            // combined sine wave pattern, higher frequency
+            {
+                double val = mid + mid * sin(4 * M_PI * r / 32.0) * cos(4 * M_PI * c / 32.0);   
+                if(val < 0) val = 0;
+                if(val > 255) val = 255;
+                return (int)val;
+            }
+            break;
+        case 5:
+        // spiral
+            {
+                int cx = camWidth / 2;
+                int cy = camHeight / 2;
+                double rr =  1.0 * (r - cy) / camWidth;
+                double cc =  1.0 * (c - cx) / camHeight;
+                double angle = atan2(rr, cc);
+                double dist =  sin(20 * sqrt((rr * rr) + (cc * cc)) + 10 * angle); 
+                return static_cast<int>(mid + dist * mid);
+
+            }
+            break;
+        case 6:
+        // fall thru
+        default:
+            // simple test pattern
+            double xx = 1.0 * c / (camWidth / 8);
+            double yy = 1.0 * r / (camHeight / 8);
+            double n = sin(xx*yy);
+            return static_cast<int>(255 *  n) % 256;
+            break;
+        }
+ 
+}
 
 
 
@@ -587,5 +711,36 @@ void load_options(int argc, char** argv){
             break;            
         }
     }
+}
+
+void mouse_callback(int event, int x, int y, int flags, void* userdata){
+ 
+    if(event == cv::EVENT_LBUTTONDOWN){
+        std::cout << "Mouse click at (" << x << ", " << y << ")" << std::endl;
+    }
+}
+
+int enumerate_cameras(void){
+    int dev_mask = 0;
+    bool no_cameras = true;
+    std::string dev_path = "/dev/";
+    for (const auto & entry : std::filesystem::directory_iterator(dev_path)) {
+        std::string filename = entry.path().filename().string();
+        if (filename.find("video") == 0) {
+            if(no_cameras){
+                if(verbose)std::cout << "Available cameras:" << std::endl;
+                no_cameras = false;
+            }
+            
+            //dev_mask |= ( 1<< std::stoi(filename.back(), nullptr) );
+            dev_mask |= ( 1 << '0' - filename.back() ); // feels icky
+            if(verbose) std::cout  << entry.path() << std::endl;
+        }
+
+    }        
+    if(no_cameras){
+        if(verbose)std::cout << "No cameras found" << std::endl;   
+    }
+    return dev_mask;
 }
 

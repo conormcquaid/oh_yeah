@@ -21,7 +21,7 @@
 
 
 #include <iostream>
-#include "../PerlinNoise/PerlinNoise.hpp"
+#include "PerlinNoise.hpp"
 #include <cstdlib> // For rand() and srand()
 #include <ctime>   // For time()
 #include <opencv2/opencv.hpp>
@@ -32,9 +32,9 @@ int main(int argc, char** argv) {
    const siv::PerlinNoise::seed_type seed = std::rand() % 100;
    const siv::PerlinNoise perlin{ seed };
 
-   double param1;
-   int param2;
-   double param3;
+   double scale = 0.009;
+   int octaves = 1;
+   double persistence = 0.9;
    int width = 1000;
    int height = 1000;
 
@@ -42,9 +42,9 @@ int main(int argc, char** argv) {
    cv::Mat thumbnail(height, width, CV_8UC1, cv::Scalar(0));
 
    if(argc > 2){
-      param1 = atof(argv[1]);
-      param2 = atoi(argv[2]);
-      param3 = atof(argv[3]);
+      scale = atof(argv[1]);
+      octaves = atoi(argv[2]);
+      persistence = atof(argv[3]);
    }
 
    double max = 0.0;
@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
 
       for(int x = 0; x < height ; ++x){
 
-         const double noise = perlin.normalizedOctave2D_01((y * param1 ), (x * param1), param2, param3);
+         const double noise = perlin.normalizedOctave2D_01((y * scale ), (x * scale), octaves, persistence);
 
          thumbnail.at<uchar>(x,y) = 255 * noise;
 

@@ -1,3 +1,8 @@
+/*
+    basic opencv: open default webcam, transform frame, render frame
+*/
+
+
 #include <opencv2/opencv.hpp>
 
 int main() {

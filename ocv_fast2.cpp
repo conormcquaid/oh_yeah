@@ -1,3 +1,11 @@
+
+/*
+    port of 'of-yeah-faster.pde' Processing script to opencv
+    Each successive camera scanline is delayed by one frame,
+    hence bubber is proportional to a triangular number.
+
+*/
+
 #include <opencv2/opencv.hpp>
 
 const int camWidth = 640;
