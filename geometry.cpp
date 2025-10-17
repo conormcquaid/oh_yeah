@@ -61,6 +61,11 @@ int main(int argc, char** argv) {
         for(int r = 0; r < height; r++){
             for(int c = 0; c < width; c++){
 
+                int cx = width / 2;
+                int cy = height / 2;
+                double rr =  1.0 * (r - cy) / width;
+                double cc =  1.0 * (c - cx) / height;
+
                 switch(mode){
                     case 0:
                         // simple test pattern
@@ -69,10 +74,7 @@ int main(int argc, char** argv) {
                     case 1:
                         // concentric circles
                         {
-                            int cx = width / 2;
-                            int cy = height / 2;
-                            double rr =  1.0 * (r - cy) / width;
-                            double cc =  1.0 * (c - cx) / height;
+
                             double dist = sin(iparam * sqrt((rr * rr) + (cc * cc))); // <-- orig
                             //double dist = sqrt( ((r - cy)*2) * ((r - cy)*2) + ((c - cx)*2) * ((c - cx)*2) );
                             //double dist = sqrt( ((r - cy)) * ((r - cy))/2 + ((c - cx)) * ((c - cx))/2 );
@@ -92,7 +94,7 @@ int main(int argc, char** argv) {
                     case 3:
                         // combined sine wave pattern
                         {
-                            double val = 128 + 127 * sin((iparam / 10.0) * M_PI * r / 1.0) * cos((iparam / 10.0) * M_PI * c / 1.0);
+                            double val = 128 + 127 * sin((iparam / 10.0) * M_PI * rr / 1.0) * cos((iparam / 10.0) * M_PI * cc / 1.0);
                             if(val < 0) val = 0;
                             if(val > 255) val = 255;
                             thumbnail.at<uchar>(r,c) = (uchar)val;
@@ -101,7 +103,7 @@ int main(int argc, char** argv) {
                         case 4:
                         // combined sine wave pattern, higher frequency
                         {
-                            double val = 128 + 127 * sin(4 * (iparam / 10.0) * (1 / 10.0) * M_PI * r / 1.0*1) * cos(4 * (iparam / 10.0)* (1 / 10.0) * M_PI * c / 1.0*1);   
+                            double val = 128 + 127 * sin((iparam / 1.0) * M_PI * rr / 4.0*1) * cos( (iparam / 1.0)* M_PI * cc / 4.0*1);   
                             if(val < 0) val = 0;
                             if(val > 255) val = 255;
                             thumbnail.at<uchar>(r,c) = (uchar)val;
@@ -115,7 +117,7 @@ int main(int argc, char** argv) {
                             double rr =  0.5 * (r - cy) / width;
                             double cc =  0.5 * (c - cx) / height;
                             double angle = atan2(rr, cc);
-                            double dist =  sin((iparam / 10.0)* sqrt((rr * rr) + (cc * cc)) + 2.0 * angle); 
+                            double dist =  sin((22.0)* sqrt((rr * rr) + (cc * cc)) + 2.0 * angle); 
                             thumbnail.at<uchar>(r,c) = static_cast<int>(65 + dist * 64);
 
                             //std::cout << dist << " ";

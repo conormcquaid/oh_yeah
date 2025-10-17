@@ -13,6 +13,7 @@
 #include <queue>
 #include <thread>
 #include <mutex>
+#include <cfloat> // For FLT_MAX
 #include "PerlinNoise.hpp"
 
 
@@ -45,6 +46,7 @@ bool  mirrorHorizontal = false;
 bool  mirrorVertical = false;
 int   param = 0;
 double   variation = 0.0;
+double timeout = 0.0;
 std::string  video_device_name = "/dev/video0";
 
 
@@ -202,6 +204,8 @@ int main(int argc, char** argv) {
         int bufSize = 0;   // how many pixels needed to hold the total  history
         int framenum = 0;  // ++ each capture frame
 
+        auto beginTimeout = std::chrono::steady_clock::now();
+
         // thumbnail shrinks
         cv::resize(thumbnail, thumbnail, cv::Size(frame.cols, frame.rows));
         
@@ -261,6 +265,7 @@ int main(int argc, char** argv) {
         while (!restart && !quit) {
 
             auto start_frame = std::chrono::high_resolution_clock::now();
+            
 
             bufStart = 0;
 
@@ -417,6 +422,20 @@ int main(int argc, char** argv) {
 
                 std::cout << std::fixed << std::setprecision(0)   << framenum << "\tFPS: " << FPS  << "\r" << std::flush;
             }
+
+            if(timeout != 0.0){
+                auto now =  std::chrono::steady_clock::now();
+                std::chrono::duration<double> elapsed_seconds = now - beginTimeout;
+                if(elapsed_seconds.count() >= timeout){
+                    // time to change algo
+                    restart = true;
+                    algorithm++;
+                    if(algorithm > N_ALGORITHMS) algorithm = 1;
+                    pEffOfEcksWye = algorithms[algorithm - 1];
+                    if(verbose) std::cout << "\nTimeout reached. Switching to algorithm " << algorithm << std::endl;
+                    lineBuffer.release();
+                }
+            }
         }// end while restart
     }// end while restart
     //captureThread.join();
@@ -531,6 +550,11 @@ int algo_multi(int r, int c, int depth_param, double variation, int mode){
     if(mid < 1) mid = 1;
     if(mid > depthMax) mid = depthMax;
 
+    int cx = camWidth / 2;
+    int cy = camHeight / 2;
+    double rr =  1.0 * (r - cy) / camWidth;
+    double cc =  1.0 * (c - cx) / camHeight;
+
     switch(mode){
         case 0:
             // random pattern
@@ -540,11 +564,8 @@ int algo_multi(int r, int c, int depth_param, double variation, int mode){
         case 1:
             // concentric circles
             {
-                int cx = camWidth / 2;
-                int cy = camHeight / 2;
-                double rr =  1.0 * (r - cy) / camWidth;
-                double cc =  1.0 * (c - cx) / camHeight;
-                double dist = sin(42 * sqrt((rr * rr) + (cc * cc))); // <-- orig
+
+                double dist = sin(10 * sqrt((rr * rr) + (cc * cc))); // <-- orig
 
                 return static_cast<int>(mid + dist * mid);//static_cast<uchar>(fmod(dist, 256));
             }
@@ -552,28 +573,28 @@ int algo_multi(int r, int c, int depth_param, double variation, int mode){
         case 2:
             // sine wave pattern
             {
-                double val = mid + mid * sin(2 * M_PI * r / 32.0);
+                double val = mid + mid * sin(1 * M_PI * r / 32.0);
                 if(val < 0) val = 0;
                 if(val > 255) val = 255;
-                return (int)val;
+                return static_cast<int>(val);
             }
             break;
         case 3:
             // combined sine wave pattern
             {
-                double val = mid + mid * sin(1 * M_PI * r / 32.0) * cos(1 * M_PI * c / 32.0);
+                double val = mid + mid * sin(30 * M_PI * rr / 1.0) * cos(30 * M_PI * cc / 1.0);
                 if(val < 0) val = 0;
                 if(val > 255) val = 255;
-                return(int)val;
+                return static_cast<int>(val);
             }
             break;
             case 4:
             // combined sine wave pattern, higher frequency
             {
-                double val = mid + mid * sin(4 * M_PI * r / 32.0) * cos(4 * M_PI * c / 32.0);   
+                double val = mid + mid * sin(4 * M_PI * rr / 2.0) * cos(4 * M_PI * cc / 2.0);   
                 if(val < 0) val = 0;
                 if(val > 255) val = 255;
-                return (int)val;
+                return static_cast<int>(val);
             }
             break;
         case 5:
@@ -584,7 +605,7 @@ int algo_multi(int r, int c, int depth_param, double variation, int mode){
                 double rr =  1.0 * (r - cy) / camWidth;
                 double cc =  1.0 * (c - cx) / camHeight;
                 double angle = atan2(rr, cc);
-                double dist =  sin(20 * sqrt((rr * rr) + (cc * cc)) + 10 * angle); 
+                double dist =  sin(220 * sqrt((rr * rr) + (cc * cc)) + 10 * angle); 
                 return static_cast<int>(mid + dist * mid);
 
             }
@@ -621,6 +642,7 @@ void usage(void){
     std::cout << "-f\tSet filter to apply to output" << std::endl;
     std::cout << "-m\tMirror horizontally" << std::endl;
     std::cout << "-M\tMirror vertically" << std::endl;
+    std::cout << "-t\tTimout in seconds. Interval to auto-increment algorithm" << std::endl;
     std::cout << "-a\tSelect algorithm 1 - "<< std::to_string(N_ALGORITHMS) << std::endl;
     std::cout << "-p\tOptional algorithm parameter - " << std::endl;
     std::cout << "v4l2-ctl --list-formats-ext will show devices and capabilities" << std::endl;
@@ -628,6 +650,16 @@ void usage(void){
 }
 
 bool assertInRange(int n, int min, int max){
+
+    if( n >= min && n <= max){
+        return true;
+    }else{
+        usage();
+        exit(0);
+    }
+    return false;// happy now, gcc?
+}
+bool assertInRange(double n, double min, double max){
 
     if( n >= min && n <= max){
         return true;
@@ -646,7 +678,7 @@ void load_options(int argc, char** argv){
         usage();
     }
 
-    while((opt = getopt(argc, argv, "a:gvd:w:W:h:H:f:p:n:")) != -1){
+    while((opt = getopt(argc, argv, "a:gvd:w:W:h:H:f:p:n:t:")) != -1){
         switch(opt){
             case 'v':
             verbose = true;
@@ -696,6 +728,11 @@ void load_options(int argc, char** argv){
             case 'f':
             filterOption = atoi(optarg);
             assertInRange(filterOption, 0, 999);
+            break;
+
+            case 't':
+            timeout = atof(optarg);
+            assertInRange(timeout, 0.0, FLT_MAX);
             break;
 
             case 'g':
