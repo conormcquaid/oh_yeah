@@ -12,8 +12,9 @@
 #include <cstdlib> // For rand() and srand()
 #include <ctime>   // For time()
 #include <opencv2/opencv.hpp>
+#include <opencv2/viz.hpp>
 #include <math.h>
-
+#include <vector>
 
 void mouse_callback(int event, int x, int y, int flags, void* userdata);
 
@@ -50,11 +51,18 @@ int main(int argc, char** argv) {
     front_buf = 0;
     back_buf = 1 - front_buf;
 
-    cv::namedWindow("Thumbnail", cv::WINDOW_AUTOSIZE);
+    //cv::namedWindow("Thumbnail", cv::WINDOW_AUTOSIZE);
     cv::Mat thumbnail(height, width, CV_8UC1, cv::Scalar(0));
-    cv::Mat out(1280, 1280, CV_8UC1, cv::Scalar(0));
+    cv::Mat out(1280, 1280, CV_32FC3);//, cv::Scalar(0));
 
-    cv::setMouseCallback("Thumbnail", mouse_callback, NULL);
+    //cv::setMouseCallback("Thumbnail", mouse_callback, NULL);
+
+    cv::viz::Viz3d vizWnd("thumb3D");
+    vizWnd.showWidget("Coordinate Widget", cv::viz::WCoordinateSystem());
+    vizWnd.setBackgroundColor(cv::viz::Color::black());
+    std::vector<cv::Point3d> pts3d1;
+
+    int valu;
 
     while(true){
 
@@ -69,7 +77,7 @@ int main(int argc, char** argv) {
                 switch(mode){
                     case 0:
                         // simple test pattern
-                        thumbnail.at<uchar>(r,c) = (r + c) % 256;
+                        valu = (r + c) % 256;
                         break;
                     case 1:
                         // concentric circles
@@ -78,7 +86,7 @@ int main(int argc, char** argv) {
                             double dist = sin(iparam * sqrt((rr * rr) + (cc * cc))); // <-- orig
                             //double dist = sqrt( ((r - cy)*2) * ((r - cy)*2) + ((c - cx)*2) * ((c - cx)*2) );
                             //double dist = sqrt( ((r - cy)) * ((r - cy))/2 + ((c - cx)) * ((c - cx))/2 );
-                            thumbnail.at<uchar>(r,c) = static_cast<int>(65 + dist * 64);//static_cast<uchar>(fmod(dist, 256));
+                            valu = static_cast<int>(65 + dist * 64);//static_cast<uchar>(fmod(dist, 256));
                             //std::cout << rr << " ";
                         }
                         break;
@@ -88,7 +96,7 @@ int main(int argc, char** argv) {
                             double val = 128 + 127 * sin((iparam / 10.0) * M_PI * r / 32);
                             if(val < 0) val = 0;
                             if(val > 255) val = 255;
-                            thumbnail.at<uchar>(r,c) = (uchar)val;
+                            valu = (uchar)val;
                         }
                         break;
                     case 3:
@@ -97,7 +105,7 @@ int main(int argc, char** argv) {
                             double val = 128 + 127 * sin((iparam / 10.0) * M_PI * rr / 1.0) * cos((iparam / 10.0) * M_PI * cc / 1.0);
                             if(val < 0) val = 0;
                             if(val > 255) val = 255;
-                            thumbnail.at<uchar>(r,c) = (uchar)val;
+                            valu = (uchar)val;
                         }
                         break;
                         case 4:
@@ -106,7 +114,7 @@ int main(int argc, char** argv) {
                             double val = 128 + 127 * sin((iparam / 1.0) * M_PI * rr / 4.0*1) * cos( (iparam / 1.0)* M_PI * cc / 4.0*1);   
                             if(val < 0) val = 0;
                             if(val > 255) val = 255;
-                            thumbnail.at<uchar>(r,c) = (uchar)val;
+                            valu = (uchar)val;
                         }
                         break;
                     case 5:
@@ -118,7 +126,7 @@ int main(int argc, char** argv) {
                             double cc =  0.5 * (c - cx) / height;
                             double angle = atan2(rr, cc);
                             double dist =  sin((22.0)* sqrt((rr * rr) + (cc * cc)) + 2.0 * angle); 
-                            thumbnail.at<uchar>(r,c) = static_cast<int>(65 + dist * 64);
+                            valu = static_cast<int>(65 + dist * 64);
 
                             //std::cout << dist << " ";
                         }
@@ -130,7 +138,7 @@ int main(int argc, char** argv) {
                         double xx = 1.0 * c / (width / 8);
                         double yy = 1.0 * r / (height / 8);
                         double n = sin(xx*yy);
-                        thumbnail.at<uchar>(r,c) = static_cast<int>(255 *  n) % 256;
+                        valu = static_cast<int>(255 *  n) % 256;
                         break;
 
 
@@ -141,9 +149,9 @@ int main(int argc, char** argv) {
                 //double val = 128 + 127 * sin(2 * M_PI * r / 32.0) * cos(2 * M_PI * c / 32.0);
 
 
+                thumbnail.at<uchar>(r,c) = valu;
 
-
-
+                pts3d1.push_back( cv::Point3d( 1.0 * c, 1.0 * r, 1.0 * thumbnail.at<uchar>(r,c) ) );
 
 
 
@@ -163,26 +171,37 @@ int main(int argc, char** argv) {
 
 
 
-            //cv::imshow("Thumbnail", thumbnail);
-            cv::resize(thumbnail, out, cv::Size(out.rows, out.cols));
-            cv::imshow("Thumbnail", out);
+        //cv::imshow("Thumbnail", thumbnail);
+  //      cv::resize(thumbnail, out, cv::Size(out.rows, out.cols));
+  //      cv::imshow("Thumbnail", out);
 
-            // block waiting for keypress
-            int key = cv::waitKey(0);
-            if(key == 'p'){
-                iparam--;
-                if(iparam < 1) iparam = 1;
-                
-            }
-            if(key == 'P'){
-                iparam++;
-                if(iparam > 255) iparam = 255;
-            }
-            if (key == 'Q' || key == 'q' || key == 27) {
-                exit(0);
-            }
-            std::cout << "Parameter : " << iparam << std::endl;
+        cv::viz::WCloud cloudWidget(pts3d1, cv::viz::Color::white());
+        cloudWidget.setRenderingProperty( cv::viz::POINT_SIZE, 2.0);
+        cloudWidget.setRenderingProperty( cv::viz::REPRESENTATION, cv::viz::REPRESENTATION_SURFACE);
+        cloudWidget.setRenderingProperty( cv::viz::SHADING, cv::viz::SHADING_PHONG);
+        cloudWidget.setRenderingProperty( cv::viz::LIGHTING, 0.5);
+        vizWnd.showWidget("Cloud Widget", cloudWidget);
+
+        vizWnd.spin();
+
+
+        // block waiting for keypress
+        int key = cv::waitKey(0);
+        if(key == 'p'){
+            iparam--;
+            if(iparam < 1) iparam = 1;
+            
         }
+        if(key == 'P'){
+            iparam++;
+            if(iparam > 255) iparam = 255;
+        }
+        if (key == 'Q' || key == 'q' || key == 27) {
+            //break;//
+            exit(0);
+        }
+        //std::cout << "Parameter : " << iparam << std::endl;
+    }
 
     
     return 0;

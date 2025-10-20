@@ -13,6 +13,7 @@
 #include <queue>
 #include <thread>
 #include <mutex>
+#include <atomic>
 #include <cfloat> // For FLT_MAX
 #include "PerlinNoise.hpp"
 
@@ -29,6 +30,8 @@
     int(depthMax * cos(M_PI * x /camWidth - M_PI/2) * cos(M_PI * y/camHeight - M_PI/2)); 
 
 */
+
+#define USE_CAPTURE_THREAD  99
 
 // A whole bunch of globals
 
@@ -101,19 +104,26 @@ EffOfEcksWye algorithms[N_ALGORITHMS]={
     algo_spiral
 };
 
+#ifdef USE_CAPTURE_THREAD   
 // video capture thread
+std::atomic_bool stop_flag(false);
 std::queue<cv::Mat> frame_queue;
 std::mutex mtx;
 
 void captureTask(cv::VideoCapture& cap){
     cv::Mat frame;
-    while(cap.isOpened()){
+    while(!stop_flag.load() && cap.isOpened()){
         cap >> frame;
         if(frame.empty()){ break; }
         std::lock_guard<std::mutex> lock(mtx);
-        frame_queue.push(frame.clone());
+
+        // queue can grow arbitrarily large if rendering is slower than capture
+        if(frame_queue.size() < 5){
+            frame_queue.push(frame.clone());
+        }
     }
 }
+#endif
 
 
 int main(int argc, char** argv) {
@@ -158,7 +168,7 @@ int main(int argc, char** argv) {
         setfps--;
     }
 
-    // where the raw cam data goes...
+    // where the raw cam data will go...
     cv::Mat frame;
 
     // grab frame to get type
@@ -167,7 +177,7 @@ int main(int argc, char** argv) {
         std::cerr<< "Capture failed" << std::endl;
         exit(0);
     }
-    // our wo output windows
+    // our two output windows
     cv::namedWindow("hill", cv::WINDOW_AUTOSIZE); 
     if(debugWindow){
         cv::namedWindow("debug", cv::WINDOW_AUTOSIZE);
@@ -189,13 +199,15 @@ int main(int argc, char** argv) {
 
 
     //attach mouse handler to main window
-    cv::setMouseCallback("hill", mouse_callback, NULL);
+    //cv::setMouseCallback("hill", mouse_callback, NULL);
 
-
+    // 
     std::vector<std::vector<int>> pixDepth(frame.rows, std::vector<int>(frame.cols));
 
+#ifdef USE_CAPTURE_THREAD
     // producer thread
-    //std::thread captureThread(captureTask, std::ref(cap));
+    std::thread captureThread(captureTask, std::ref(cap));
+#endif
 
     bool quit = false;
     while(!quit){
@@ -247,56 +259,74 @@ int main(int argc, char** argv) {
         camHeight = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
         fps = cap.get(cv::CAP_PROP_FPS);
 
+        // we can optimize access if all buffers are allocated continuously
+        bool continuousBuffers =    frame.isContinuous() && 
+                                    lineBuffer.isContinuous() &&
+                                    renderBuf.isContinuous();
+        if(  continuousBuffers ){
+
+                if(verbose ) std::cout << "Optimizing out cv::Mat.at()" <<  std::endl;
+        }
+
         if(verbose) std::cout << "Maximum history per pixel is " << depthMax <<  std::endl;
         if(verbose) std::cout << "Camera WxH ( " << frame.cols  << ", " << frame.rows  << " )" << std::endl;
         if(verbose) std::cout << "Screen WxH ( " << dispWidth   << ", " << dispHeight  << " ) (requested or default: may not be the actual resulting size)" <<  std::endl;
         if(verbose) std::cout << "History buffer size: " << bufSize << std::endl;
         if(verbose) std::cout << "Frames per second: " << fps <<  std::endl;
-        if(verbose && frame.isContinuous()) std::cout << "Optimizing out cv::Mat.at()" <<  std::endl;
+        if(verbose && timeout) std::cout << "Timeout: " << timeout << " seconds" << std::endl;
+        if(verbose && continuousBuffers) std::cout << "Optimizing out cv::Mat.at()" <<  std::endl;
 
         bool once = false;
         bool restart = false;
 
         // [frame] ==> [lineBuffer] ==> [renderBuf]
-
+        
+        cv::Vec3b* pSrc;
+        cv::Vec3b* pBuf;
+        cv::Vec3b* pOut;
         
         restart = false;
-
+        // run a new algorithm or die
         while (!restart && !quit) {
 
             auto start_frame = std::chrono::high_resolution_clock::now();
             
-
             bufStart = 0;
 
             // grab webcam frame
+
+#ifdef USE_CAPTURE_THREAD
+            {
+                // avoid blocking capture 
+                std::lock_guard<std::mutex> lock(mtx);
+                if(!frame_queue.empty()){
+                    frame = frame_queue.front();
+                    frame_queue.pop();
+                }else{
+                    // no new frame, skip processing
+                    //if(verbose) std::cout << "No new frame available" << std::endl;
+                    continue;
+                }
+            }
+#else           
+            // this code blocks until a frame is captured
             cap >> frame; 
             if(frame.empty()){
                 std::cerr<< "Capture failed" << std::endl;
                 exit(0);
             }
+#endif
+            cv::Vec3b* pSrc = frame.ptr<cv::Vec3b>(0);
+            cv::Vec3b* pBuf = lineBuffer.ptr<cv::Vec3b>(0);
+            cv::Vec3b* pOut = renderBuf.ptr<cv::Vec3b>(0);
 
-            // {
-            //     std::lock_guard<std::mutex> lock(mtx);
-            //     if(!frame_queue.empty()){
-            //         frame = frame_queue.front();
-            //         frame_queue.pop();
-            //     }else{
-            //         // no new frame, skip processing
-            //         //if(verbose) std::cout << "No new frame available" << std::endl;
-            //         continue;
-            //     }
-            // }
+            auto core_start = std::chrono::high_resolution_clock::now();
             // try to optimize out .at<> calls
-            if(  frame.isContinuous() && 
-                 lineBuffer.isContinuous() &&
-                 renderBuf.isContinuous() ){
+            if(  continuousBuffers ){
 
-                cv::Vec3b* pSrc = frame.ptr<cv::Vec3b>(0);
-                cv::Vec3b* pBuf = lineBuffer.ptr<cv::Vec3b>(0);
-                cv::Vec3b* pOut = renderBuf.ptr<cv::Vec3b>(0);
-
+                // upgrade: could iterate using linear buffer access and avoid [r][c] lookup
                 for (int c = 0; c < frame.cols; ++c) {
+
                     for (int r = 0; r < frame.rows; ++r) {
 
                         int z = pixDepth[r][c];
@@ -312,6 +342,7 @@ int main(int argc, char** argv) {
                 }
 
             }else{
+                // use buffer.at<cv::Vec3b>
     
                 for(int c = 0; c < frame.cols; c++){
                 
@@ -329,7 +360,9 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            auto core_end = std::chrono::high_resolution_clock::now();
 
+            auto start_render = std::chrono::high_resolution_clock::now();
             //     0: Flips the image vertically (around the x-axis).
             //     1: Flips the image horizontally (around the y-axis), creating a mirror effect.
             //    -1: Flips the image both horizontally and vertically (equivalent to a 180-degree rotation).
@@ -344,13 +377,13 @@ int main(int argc, char** argv) {
             cv::Size outputSize( dispWidth, dispHeight);
             cv::resize(renderBuf, final, outputSize);
 
-            if(verbose && !once){
-                std::cout << "Final WxH ( " << final.cols  << ", " << final.rows  << " )" << std::endl;
-            }
+            // if(verbose && !once){
+            //     std::cout << "Final WxH ( " << final.cols  << ", " << final.rows  << " )" << std::endl;
+            // }
 
             //TODO: apply filtering here? or before resizing?
-            int f = depthMax / 2;
-            f = (f % 2 == 0) ? f+1 : f;
+            // int f = depthMax / 2;
+            // f = (f % 2 == 0) ? f+1 : f;
 
         //cv::GaussianBlur(final, final, cv::Size(f, f), 0);
 
@@ -359,6 +392,7 @@ int main(int argc, char** argv) {
             if(debugWindow){
                 cv::imshow("debug", frame);
             }
+            auto end_render = std::chrono::high_resolution_clock::now();
 
             framenum++;
 
@@ -368,15 +402,15 @@ int main(int argc, char** argv) {
             if (key == 'Q' || key == 'q' || key == 27) {
                 quit = true;
                 break;
-            }
+            }else
             if(key == 'm'){
                 mirrorHorizontal = !mirrorHorizontal;
                 std::cout << "Mirror horizontal " << (mirrorHorizontal ? "ON" : "OFF") << std::endl;
-            }
+            }else
             if(key == 'M'){
                 mirrorVertical = !mirrorVertical;
                 std::cout << "Mirror vertical " << (mirrorVertical ? "ON" : "OFF") << std::endl;
-            }
+            }else
             if(key == 'a' || key == 'A'){
 
                 // iterate through available algorithms
@@ -387,7 +421,7 @@ int main(int argc, char** argv) {
                 if(verbose)std::cout << "Algorithm " << algorithm << std::endl;
 
                 lineBuffer.release();
-            }
+            }else
             if(key == '+' || key == '-' || key == '=' || key == '_'){
 
                 if(key == '+' || key == '='){
@@ -410,17 +444,41 @@ int main(int argc, char** argv) {
 
             // calculate FPS
             static double FPS_A[16] = {0.0};
+            static double core_A[16] = {0.0};
+            static double render_A[16] = {0.0};
             static int FPS_i = 0;
             auto end_frame = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> frame_duration = end_frame - start_frame;
             if(verbose){
-                std::chrono::duration<double, std::milli> frame_duration = end_frame - start_frame;
+                
                 FPS_A[FPS_i++ % 16] = frame_duration.count();
                 double FPS = 0.0;
                 for(int i = 0; i < 16; i++) FPS += FPS_A[i];
                 FPS /= 16.0;
                 //std::cout << std::fixed << std::setprecision(0)   << framenum << "\tFPS: " << 1000/frame_duration.count()  << "\r" << std::flush;
 
-                std::cout << std::fixed << std::setprecision(0)   << framenum << "\tFPS: " << FPS  << "\r" << std::flush;
+       //         std::cout << std::fixed << std::setprecision(0)   << framenum << "\r\tFPS: " << FPS  << std::flush;//<< "\r" 
+            // }
+            // if(verbose){
+                std::chrono::duration<double, std::milli> core_duration = core_end - core_start;
+        //        std::cout << " Core processing time (ms): " << core_duration.count() << std::endl;
+                core_A[FPS_i % 16] = core_duration.count();
+                double CORE = 0.0;
+                for(int i = 0; i < 16; i++) CORE += core_A[i];
+                CORE /= 16.0;
+                //std::cout << " \t\t\tcore: " << CORE << std::flush; ;
+
+                std::chrono::duration<double, std::milli> render_duration = end_render - start_render;
+                render_A[FPS_i % 16] = render_duration.count();
+                double RENDER = 0.0;
+                for(int i = 0; i < 16; i++) RENDER += render_A[i];
+                RENDER /= 16.0;
+
+                std::cout << "\r[" << framenum << "]\tFPS: "<< std::fixed << std::setprecision(0)  << 1000/FPS  
+                                                <<"  Loop: "<< FPS 
+                                                << " Core [" << std::fixed << std::setprecision(0) << CORE 
+                                                <<"] render["<< std::fixed << std::setprecision(0) << RENDER << "]"
+                                                << std::flush;
             }
 
             if(timeout != 0.0){
@@ -438,7 +496,13 @@ int main(int argc, char** argv) {
             }
         }// end while restart
     }// end while restart
-    //captureThread.join();
+
+#ifdef USE_CAPTURE_THREAD
+
+    stop_flag.store(true);
+    captureThread.join();
+
+#endif
 
     return 0;
 }
