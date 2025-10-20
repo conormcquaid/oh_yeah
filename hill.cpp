@@ -184,8 +184,6 @@ int main(int argc, char** argv) {
     } 
     cv::Mat thumbnail(frame.rows, frame.cols, CV_8UC1, cv::Scalar(0));
 
-
-
     // renderBuf will hold the output of our artistic algorithm
     cv::Mat renderBuf = frame.clone();
     
@@ -398,48 +396,84 @@ int main(int argc, char** argv) {
 
 
             // Exit loop if 'q' is pressed
-            int key = cv::waitKey(1);
-            if (key == 'Q' || key == 'q' || key == 27) {
-                quit = true;
-                break;
-            }else
-            if(key == 'm'){
-                mirrorHorizontal = !mirrorHorizontal;
-                std::cout << "Mirror horizontal " << (mirrorHorizontal ? "ON" : "OFF") << std::endl;
-            }else
-            if(key == 'M'){
-                mirrorVertical = !mirrorVertical;
-                std::cout << "Mirror vertical " << (mirrorVertical ? "ON" : "OFF") << std::endl;
-            }else
-            if(key == 'a' || key == 'A'){
+            int key = cv::waitKey(1); // losing at least a milllisecond :(
 
-                // iterate through available algorithms
-                restart = true;
-                algorithm++;
-                if(algorithm > N_ALGORITHMS) algorithm = 1;
-                pEffOfEcksWye = algorithms[algorithm - 1];
-                if(verbose)std::cout << "Algorithm " << algorithm << std::endl;
+            switch(key){
+                case 'Q':
+                case 'q':
+                case 27:
+                    quit = true;
+                    break;
 
-                lineBuffer.release();
-            }else
-            if(key == '+' || key == '-' || key == '=' || key == '_'){
+                case 'm':
+                    mirrorHorizontal = !mirrorHorizontal;
+                    std::cout << "Mirror horizontal " << (mirrorHorizontal ? "ON" : "OFF") << std::endl;
+                    break;
+                    
+                case 'M':
+                    mirrorVertical = !mirrorVertical;
+                    std::cout << "Mirror vertical " << (mirrorVertical ? "ON" : "OFF") << std::endl;
+                    break;   
 
-                if(key == '+' || key == '='){
+                case 'a':
+                case 'A':
+
+                    // iterate through available algorithms
+                    restart = true;
+                    algorithm++;
+                    if(algorithm > N_ALGORITHMS) algorithm = 1;
+                    pEffOfEcksWye = algorithms[algorithm - 1];
+                    if(verbose)std::cout << "Algorithm " << algorithm << std::endl;
+
+                    lineBuffer.release();
+                    break;
+
+                case '+':
+                case '=':
                     param++;
-                }else{
+                    if(param > depthMax) param = depthMax;
+
+                    // iterate through available algorithms
+                    restart = true;
+                    
+                    if(verbose) std::cout << "New param: " << param << std::endl;
+
+                    lineBuffer.release();
+                    break;
+
+                case '-':
+                case '_':
                     param--;
-                }
-                if(param < 0) param = 0;
-                if(param > depthMax) param = depthMax;
+                    if(param < 0) param = 0;
 
-                // iterate through available algorithms
-                restart = true;
-               
-                if(verbose)std::cout << "New param: " << param << std::endl;
+                    // iterate through available algorithms
+                    restart = true;
+                    
+                    if(verbose) std::cout << "New param: " << param << std::endl;
 
-                lineBuffer.release();
-            }
+                    lineBuffer.release();
+                    break;
 
+                case 'd':
+                    depthMax -= 1;
+                    if(depthMax < 1) depthMax = 1;
+                    //std::cout << "Depth max decreased to " << depthMax << std::endl;
+                    restart = true;
+                    lineBuffer.release();
+                    break;
+                
+                case 'D':
+                    depthMax += 1;
+                    //std::cout << "Depth max increased to " << depthMax << std::endl;
+                    restart = true;
+                    lineBuffer.release();
+                    break;
+
+                default:
+                    break; //really?
+
+            }//end switch
+                       
             once = true;
 
             // calculate FPS
@@ -447,38 +481,33 @@ int main(int argc, char** argv) {
             static double core_A[16] = {0.0};
             static double render_A[16] = {0.0};
             static int FPS_i = 0;
-            auto end_frame = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<double, std::milli> frame_duration = end_frame - start_frame;
+
             if(verbose){
-                
+                auto end_frame = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double, std::milli> frame_duration = end_frame - start_frame;
                 FPS_A[FPS_i++ % 16] = frame_duration.count();
                 double FPS = 0.0;
                 for(int i = 0; i < 16; i++) FPS += FPS_A[i];
                 FPS /= 16.0;
-                //std::cout << std::fixed << std::setprecision(0)   << framenum << "\tFPS: " << 1000/frame_duration.count()  << "\r" << std::flush;
 
-       //         std::cout << std::fixed << std::setprecision(0)   << framenum << "\r\tFPS: " << FPS  << std::flush;//<< "\r" 
-            // }
-            // if(verbose){
-                std::chrono::duration<double, std::milli> core_duration = core_end - core_start;
-        //        std::cout << " Core processing time (ms): " << core_duration.count() << std::endl;
-                core_A[FPS_i % 16] = core_duration.count();
-                double CORE = 0.0;
-                for(int i = 0; i < 16; i++) CORE += core_A[i];
-                CORE /= 16.0;
-                //std::cout << " \t\t\tcore: " << CORE << std::flush; ;
+                // std::chrono::duration<double, std::milli> core_duration = core_end - core_start;
+                // core_A[FPS_i % 16] = core_duration.count();
+                // double CORE = 0.0;
+                // for(int i = 0; i < 16; i++) CORE += core_A[i];
+                // CORE /= 16.0;
+                // //std::cout << " \t\t\tcore: " << CORE << std::flush; ;
 
-                std::chrono::duration<double, std::milli> render_duration = end_render - start_render;
-                render_A[FPS_i % 16] = render_duration.count();
-                double RENDER = 0.0;
-                for(int i = 0; i < 16; i++) RENDER += render_A[i];
-                RENDER /= 16.0;
+                // std::chrono::duration<double, std::milli> render_duration = end_render - start_render;
+                // render_A[FPS_i % 16] = render_duration.count();
+                // double RENDER = 0.0;
+                // for(int i = 0; i < 16; i++) RENDER += render_A[i];
+                // RENDER /= 16.0;
 
-                std::cout << "\r[" << framenum << "]\tFPS: "<< std::fixed << std::setprecision(0)  << 1000/FPS  
-                                                <<"  Loop: "<< FPS 
-                                                << " Core [" << std::fixed << std::setprecision(0) << CORE 
-                                                <<"] render["<< std::fixed << std::setprecision(0) << RENDER << "]"
-                                                << std::flush;
+                 std::cout << "\r[" << framenum << "]\tFPS: "<< std::fixed << std::setprecision(0)  << 1000/FPS  
+                //                                 <<"  Loop: "<< FPS 
+                //                                 << " Core [" << std::fixed << std::setprecision(0) << CORE 
+                //                                 <<"] render["<< std::fixed << std::setprecision(0) << RENDER << "]"
+                                                 << std::flush;
             }
 
             if(timeout != 0.0){
