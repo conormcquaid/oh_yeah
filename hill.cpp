@@ -50,6 +50,8 @@ bool  mirrorVertical = false;
 int   param = 0;
 double   variation = 0.0;
 double timeout = 0.0;
+double noise   = 0.0;
+double auto_noise   = 0.0;
 std::string  video_device_name = "/dev/video0";
 
 
@@ -171,14 +173,14 @@ int main(int argc, char** argv) {
     // where the raw cam data will go...
     cv::Mat frame;
 
-    // grab frame to get type
+    // grab one frame just to get type
     cap >> frame;
     if(frame.empty()){
         std::cerr<< "Capture failed" << std::endl;
         exit(0);
     }
     // our two output windows
-    cv::namedWindow("hill", cv::WINDOW_AUTOSIZE); 
+    cv::namedWindow("slow glass", cv::WINDOW_AUTOSIZE); 
     if(debugWindow){
         cv::namedWindow("debug", cv::WINDOW_AUTOSIZE);
     } 
@@ -267,8 +269,8 @@ int main(int argc, char** argv) {
         }
 
         if(verbose) std::cout << "Maximum history per pixel is " << depthMax <<  std::endl;
-        if(verbose) std::cout << "Camera WxH ( " << frame.cols  << ", " << frame.rows  << " )" << std::endl;
-        if(verbose) std::cout << "Screen WxH ( " << dispWidth   << ", " << dispHeight  << " ) (requested or default: may not be the actual resulting size)" <<  std::endl;
+        if(verbose) std::cout << "Camera w x h ( " << frame.cols  << ", " << frame.rows  << " )" << std::endl;
+        if(verbose) std::cout << "Screen W x H ( " << dispWidth   << ", " << dispHeight  << " ) (requested or default: may not be the actual resulting size)" <<  std::endl;
         if(verbose) std::cout << "History buffer size: " << bufSize << std::endl;
         if(verbose) std::cout << "Frames per second: " << fps <<  std::endl;
         if(verbose && timeout) std::cout << "Timeout: " << timeout << " seconds" << std::endl;
@@ -334,6 +336,17 @@ int main(int argc, char** argv) {
                         pBuf[bufStart + (framenum % z)] = pSrc[pixelIndex];
 
                         pOut[pixelIndex] = pBuf[bufStart + ((framenum + 1) % z)];
+
+                        if(noise > 0.0 || auto_noise > 0.0){
+
+                            auto n = std::rand() % 100;
+               
+                            if( (n < noise) || (n < auto_noise) ){
+                                // inject some noise
+                                auto q = std::rand() % 256;
+                                pOut[pixelIndex] = cv::Vec3b( q, q, q);
+                            }
+                        }
                         
                         bufStart += z;
                     }
@@ -357,6 +370,10 @@ int main(int argc, char** argv) {
                         bufStart += z;
                     }
                 }
+            }
+            if(auto_noise > 0.0){
+                auto_noise = auto_noise -1.0;
+                if(auto_noise < 0.0) auto_noise = 0.0;
             }
             auto core_end = std::chrono::high_resolution_clock::now();
 
@@ -385,7 +402,7 @@ int main(int argc, char** argv) {
 
         //cv::GaussianBlur(final, final, cv::Size(f, f), 0);
 
-            cv::imshow("hill", final);
+            cv::imshow("slow glass", final);
 
             if(debugWindow){
                 cv::imshow("debug", frame);
@@ -404,6 +421,22 @@ int main(int argc, char** argv) {
                 case 27:
                     quit = true;
                     break;
+
+                case 'r':
+                noise--;
+                if(noise < 0.0) noise = 0.0;
+                assertInRange(noise, 0.0, 100.0);
+                break;
+            
+                case 'R':
+                noise++;
+                if(noise > 100.0) noise = 100.0;
+                assertInRange(noise, 0.0, 100.0);
+                break;
+
+                case 'N':
+                auto_noise = 100.0;
+                break;
 
                 case 'm':
                     mirrorHorizontal = !mirrorHorizontal;
@@ -470,6 +503,7 @@ int main(int argc, char** argv) {
                     break;
 
                 default:
+                    //printf("Default key handler: keycode %d\n", key);
                     break; //really?
 
             }//end switch
@@ -822,7 +856,7 @@ void load_options(int argc, char** argv){
             filterOption = atoi(optarg);
             assertInRange(filterOption, 0, 999);
             break;
-
+       
             case 't':
             timeout = atof(optarg);
             assertInRange(timeout, 0.0, FLT_MAX);
