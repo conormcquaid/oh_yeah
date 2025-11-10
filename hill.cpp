@@ -33,6 +33,11 @@
 
 #define USE_CAPTURE_THREAD  99
 
+#define MAX_FILTERS 9
+#define K (1024)
+#define M (1024 * K)
+#define G (1024 * M)
+
 // A whole bunch of globals
 
 int   camWidth     = 1280;
@@ -213,7 +218,7 @@ int main(int argc, char** argv) {
     while(!quit){
 
         int bufStart = 0;  // the start of the history for a given pixel
-        int bufSize = 0;   // how many pixels needed to hold the total  history
+        size_t bufSize = 0;   // how many pixels needed to hold the total  history
         int framenum = 0;  // ++ each capture frame
 
         auto beginTimeout = std::chrono::steady_clock::now();
@@ -267,14 +272,27 @@ int main(int argc, char** argv) {
 
                 if(verbose ) std::cout << "Optimizing out cv::Mat.at()" <<  std::endl;
         }
+        std::string humanbuf;
+        if(bufSize > G){
+            humanbuf = " (" + std::to_string(bufSize / G) + " GB)";
+        }else if(bufSize > M){
+            humanbuf = " (" + std::to_string(bufSize / M) + " MB)"; 
+        }else if(bufSize > K){
+            humanbuf = " (" + std::to_string(bufSize / K) + " KB)";
+        }else{
+            humanbuf = " (" + std::to_string(bufSize) + " bytes)";
+        }
+
 
         if(verbose) std::cout << "Maximum history per pixel is " << depthMax <<  std::endl;
         if(verbose) std::cout << "Camera w x h ( " << frame.cols  << ", " << frame.rows  << " )" << std::endl;
         if(verbose) std::cout << "Screen W x H ( " << dispWidth   << ", " << dispHeight  << " ) (requested or default: may not be the actual resulting size)" <<  std::endl;
-        if(verbose) std::cout << "History buffer size: " << bufSize << std::endl;
+        if(verbose) std::cout << "History buffer size: " << bufSize << humanbuf <<std::endl;
         if(verbose) std::cout << "Frames per second: " << fps <<  std::endl;
         if(verbose && timeout) std::cout << "Timeout: " << timeout << " seconds" << std::endl;
-        if(verbose && continuousBuffers) std::cout << "Optimizing out cv::Mat.at()" <<  std::endl;
+        if(verbose) std::cout << "Mirror horizontal: " << (mirrorHorizontal ? "ON" : "OFF") << std::endl;
+        if(verbose) std::cout << "Mirror vertical: " << (mirrorVertical ? "ON" : "OFF") << std::endl;
+        if(verbose && continuousBuffers) std::cout << "Optimizing out cv::Mat.at()" <<  std::endl <<  std::endl;
 
         bool once = false;
         bool restart = false;
@@ -392,15 +410,15 @@ int main(int argc, char** argv) {
             cv::Size outputSize( dispWidth, dispHeight);
             cv::resize(renderBuf, final, outputSize);
 
-            // if(verbose && !once){
-            //     std::cout << "Final WxH ( " << final.cols  << ", " << final.rows  << " )" << std::endl;
-            // }
 
             //TODO: apply filtering here? or before resizing?
             // int f = depthMax / 2;
             // f = (f % 2 == 0) ? f+1 : f;
+            int f = 2 * (filterOption) + 1; // 0=>1, 1=>3, 2=>5, etc
 
-        //cv::GaussianBlur(final, final, cv::Size(f, f), 0);
+            if(filterOption){
+                cv::GaussianBlur(final, final, cv::Size(f, f), 0);
+            }
 
             cv::imshow("slow glass", final);
 
@@ -423,29 +441,31 @@ int main(int argc, char** argv) {
                     break;
 
                 case 'r':
-                noise--;
-                if(noise < 0.0) noise = 0.0;
-                assertInRange(noise, 0.0, 100.0);
+                    noise--;
+                    if(noise < 0.0) noise = 0.0;
+                    assertInRange(noise, 0.0, 100.0);
                 break;
             
                 case 'R':
-                noise++;
-                if(noise > 100.0) noise = 100.0;
-                assertInRange(noise, 0.0, 100.0);
+                    noise++;
+                    if(noise > 100.0) noise = 100.0;
+                    assertInRange(noise, 0.0, 100.0);
                 break;
 
                 case 'N':
-                auto_noise = 100.0;
+                    auto_noise = 100.0;
                 break;
 
-                case 'm':
+                case 'h':
+                case 'H':
                     mirrorHorizontal = !mirrorHorizontal;
-                    std::cout << "Mirror horizontal " << (mirrorHorizontal ? "ON" : "OFF") << std::endl;
+                    std::cout << "\nMirror horizontal " << (mirrorHorizontal ? "ON" : "OFF") << std::endl;
                     break;
                     
-                case 'M':
+                case 'v':
+                case 'V':
                     mirrorVertical = !mirrorVertical;
-                    std::cout << "Mirror vertical " << (mirrorVertical ? "ON" : "OFF") << std::endl;
+                    std::cout << "\nMirror vertical " << (mirrorVertical ? "ON" : "OFF") << std::endl;
                     break;   
 
                 case 'a':
@@ -456,7 +476,7 @@ int main(int argc, char** argv) {
                     algorithm++;
                     if(algorithm > N_ALGORITHMS) algorithm = 1;
                     pEffOfEcksWye = algorithms[algorithm - 1];
-                    if(verbose)std::cout << "Algorithm " << algorithm << std::endl;
+                    if(verbose)std::cout << "\nAlgorithm " << algorithm << std::endl;
 
                     lineBuffer.release();
                     break;
@@ -469,7 +489,7 @@ int main(int argc, char** argv) {
                     // iterate through available algorithms
                     restart = true;
                     
-                    if(verbose) std::cout << "New param: " << param << std::endl;
+                    if(verbose) std::cout << "\nNew param: " << param << std::endl;
 
                     lineBuffer.release();
                     break;
@@ -482,12 +502,13 @@ int main(int argc, char** argv) {
                     // iterate through available algorithms
                     restart = true;
                     
-                    if(verbose) std::cout << "New param: " << param << std::endl;
+                    if(verbose) std::cout << "\nNew param: " << param << std::endl;
 
                     lineBuffer.release();
                     break;
 
                 case 'd':
+                case 'D':
                     depthMax -= 1;
                     if(depthMax < 1) depthMax = 1;
                     //std::cout << "Depth max decreased to " << depthMax << std::endl;
@@ -495,11 +516,19 @@ int main(int argc, char** argv) {
                     lineBuffer.release();
                     break;
                 
-                case 'D':
+                case 'U':
+                case 'u':
                     depthMax += 1;
                     //std::cout << "Depth max increased to " << depthMax << std::endl;
                     restart = true;
                     lineBuffer.release();
+                    break;
+
+                case 'f':
+                case 'F':
+                    filterOption++;
+                    if(filterOption > MAX_FILTERS) filterOption = 0;
+                    std::cout << "\nFilter option set to " << filterOption << std::endl;
                     break;
 
                 default:
@@ -537,7 +566,11 @@ int main(int argc, char** argv) {
                 // for(int i = 0; i < 16; i++) RENDER += render_A[i];
                 // RENDER /= 16.0;
 
-                 std::cout << "\r[" << framenum << "]\tFPS: "<< std::fixed << std::setprecision(0)  << 1000/FPS  
+                if(framenum < 16){
+                    FPS = 1000;
+                }
+
+                 std::cout << "\r[" << framenum << "]\t\tFPS: "<< std::fixed << std::setprecision(0)  << 1000/FPS  
                 //                                 <<"  Loop: "<< FPS 
                 //                                 << " Core [" << std::fixed << std::setprecision(0) << CORE 
                 //                                 <<"] render["<< std::fixed << std::setprecision(0) << RENDER << "]"
@@ -754,16 +787,35 @@ int algo_multi(int r, int c, int depth_param, double variation, int mode){
 
 //////////////////////////////
 
+void keys(void){
+    std::cout << "Interactive commands:" << std::endl;
+    std::cout << "=====================" << std::endl;
+    std::cout << "  'q' or 'Q' or ESC   Quit" << std::endl;
+    std::cout << "  'a' or 'A'          Next algorithm" << std::endl;
+    std::cout << "  '+' or '='          Increase algorithm parameter" << std::endl;
+    std::cout << "  '-' or '_'          Decrease algorithm parameter" << std::endl;
+    std::cout << "  'u' or 'U'          Increase maximum pixel history depth" << std::endl;
+    std::cout << "  'd' or 'D'          Decrease maximum pixel history depth" << std::endl;
+    std::cout << "  'h' or 'H'          Toggle mirror horizontal" << std::endl;
+    std::cout << "  'v' or 'V'          Toggle mirror vertical" << std::endl;
+    std::cout << "  'R'                 Increase noise injection" << std::endl;
+    std::cout << "  'r'                 Decrease noise injection" << std::endl;
+    std::cout << "  'N'                 Inject noise burst with automatic decay" << std::endl;
+    std::cout << std::endl << std::endl;
+}
+
 void usage(void){
     std::cout << "Usage:" << progname << " [OPTIONS]" << std::endl;
-    std::cout << "2D funhouse mirror effect" << std::endl << std::endl;
+    std::cout << std::endl;
+    std::cout << "2D funhouse mirror effect with pixel history" << std::endl;
+    std::cout << std::endl;
     std::cout << "Hit 'Q' to quit" << std::endl << std::endl;
     std::cout << "-v\tVerbose" << std::endl;
     std::cout << "-n\tName of input device. Defaults to /dev/video0" << std::endl;
     std::cout << "-g\tShow debug window (raw camera feed)" << std::endl;
     std::cout << "-d\tSet maximum pixel history depth [1-254]" << std::endl;
     std::cout << "-w\tSet camera width" << std::endl;
-    std::cout << "-h\tSet camera heigth" << std::endl;
+    std::cout << "-h\tSet camera height" << std::endl;
     std::cout << "-W\tSet output window width" << std::endl;
     std::cout << "-H\tSet output window height" << std::endl;
     std::cout << "-f\tSet filter to apply to output" << std::endl;
@@ -771,9 +823,11 @@ void usage(void){
     std::cout << "-M\tMirror vertically" << std::endl;
     std::cout << "-t\tTimout in seconds. Interval to auto-increment algorithm" << std::endl;
     std::cout << "-a\tSelect algorithm 1 - "<< std::to_string(N_ALGORITHMS) << std::endl;
-    std::cout << "-p\tOptional algorithm parameter - " << std::endl;
+    std::cout << "-p\tOptional algorithm parameter - " << std::endl << std::endl;
     std::cout << "v4l2-ctl --list-formats-ext will show devices and capabilities" << std::endl;
     std::cout << std::endl;
+
+    keys();
 }
 
 bool assertInRange(int n, int min, int max){
@@ -805,8 +859,9 @@ void load_options(int argc, char** argv){
         usage();
     }
 
-    while((opt = getopt(argc, argv, "a:gvd:w:W:h:H:f:p:n:t:")) != -1){
+    while((opt = getopt(argc, argv, "a:gvd:w:W:h:H:f:p:n:t:mM")) != -1){
         switch(opt){
+
             case 'v':
             verbose = true;
             break;
@@ -828,28 +883,28 @@ void load_options(int argc, char** argv){
 
             case 'd':
             depthMax = atoi(optarg);
-            assertInRange(depthMax, 1, 254);
+            assertInRange(depthMax, 1, 999);
               
             break;
 
             case 'h':
             camHeight = atoi(optarg);
-            assertInRange(camHeight, 1, 2048);
+            assertInRange(camHeight, 1, 8192);
             break;
 
             case 'H':
             dispHeight = atoi(optarg);
-            assertInRange(dispHeight, 1, 2048);
+            assertInRange(dispHeight, 1, 8192);
             break;
 
             case 'w':
             camWidth = atoi(optarg);
-            assertInRange(camWidth, 1, 2048);
+            assertInRange(camWidth, 1, 8192);
             break;
 
             case 'W':
             dispWidth = atoi(optarg);
-            assertInRange(dispWidth, 1, 2048);
+            assertInRange(dispWidth, 1, 8192);
             break;
 
             case 'f':
@@ -864,6 +919,14 @@ void load_options(int argc, char** argv){
 
             case 'g':
             debugWindow = true;
+            break;
+
+            case 'm':
+            mirrorHorizontal = true;
+            break;  
+
+            case 'M':
+            mirrorVertical = true;
             break;
 
             case '?':
