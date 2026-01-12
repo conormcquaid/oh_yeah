@@ -1,4 +1,5 @@
 #include <opencv2/opencv.hpp>
+#include <opencv2/core/ocl.hpp>
 // #include <opencv2/imgproc.hpp>
 // #include <opencv2/videoio.hpp>
 
@@ -175,6 +176,15 @@ int main(int argc, char** argv) {
         setfps--;
     }
 
+    // Check for OpenCL/GPU availability
+    cv::ocl::setUseOpenCL(true);
+    bool haveGpu = cv::ocl::haveOpenCL();
+    if(haveGpu){
+        if(verbose) std::cout << "OpenCL available: " << cv::ocl::Device::getDefault().name() << std::endl;
+    }else{
+        if(verbose) std::cout << "OpenCL not available, using CPU" << std::endl;
+    }
+
     // where the raw cam data will go...
     cv::Mat frame;
 
@@ -196,8 +206,11 @@ int main(int argc, char** argv) {
     
 
     // a final output buffer may be needed since resize is not an in-place function ??
-    int mtype = frame.type();       
+    int mtype = frame.type();
     cv::Mat final(dispHeight, dispWidth, mtype);
+
+    // GPU buffers for accelerated post-processing
+    cv::UMat renderGpu, finalGpu;
 
     //           rows   cols 
     //cv::Mat hill(camHeight, camWidth, CV_8UC3, cv::Scalar(0, 0, 0));
@@ -411,16 +424,18 @@ int main(int argc, char** argv) {
             //     1: Flips the image horizontally (around the y-axis), creating a mirror effect.
             //    -1: Flips the image both horizontally and vertically (equivalent to a 180-degree rotation).
 
+            // Upload to GPU and do post-processing there
+            renderBuf.copyTo(renderGpu);
+
             if(mirrorHorizontal){
-                cv::flip(renderBuf, renderBuf, 1);
-            }   
+                cv::flip(renderGpu, renderGpu, 1);
+            }
             if(mirrorVertical){
-                cv::flip(renderBuf, renderBuf, 0);
+                cv::flip(renderGpu, renderGpu, 0);
             }
 
             cv::Size outputSize( dispWidth, dispHeight);
-            cv::resize(renderBuf, final, outputSize);
-
+            cv::resize(renderGpu, finalGpu, outputSize);
 
             //TODO: apply filtering here? or before resizing?
             // int f = depthMax / 2;
@@ -428,10 +443,10 @@ int main(int argc, char** argv) {
             int f = 2 * (filterOption) + 1; // 0=>1, 1=>3, 2=>5, etc
 
             if(filterOption){
-                cv::GaussianBlur(final, final, cv::Size(f, f), 0);
+                cv::GaussianBlur(finalGpu, finalGpu, cv::Size(f, f), 0);
             }
 
-            cv::imshow("slow glass", final);
+            cv::imshow("slow glass", finalGpu);
 
             if(debugWindow){
                 cv::imshow("debug", frame);
