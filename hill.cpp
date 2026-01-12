@@ -346,31 +346,38 @@ int main(int argc, char** argv) {
             // try to optimize out .at<> calls
             if(  continuousBuffers ){
 
-                // upgrade: could iterate using linear buffer access and avoid [r][c] lookup
-                for (int c = 0; c < frame.cols; ++c) {
+                const int cols = frame.cols;
+                const int rows = frame.rows;
+                const int framenum_plus1 = framenum + 1;
+                const bool doNoise = (noise > 0.0 || auto_noise > 0.0);
+                const int noiseThreshold = static_cast<int>(std::max(noise, auto_noise));
 
-                    for (int r = 0; r < frame.rows; ++r) {
+                // Row-major iteration for cache locality
+                for (int r = 0; r < rows; ++r) {
 
-                        int z = pixDepth[r][c];
-                        
-                        int pixelIndex = r * frame.cols + c;
+                    const int* __restrict__ depthRow = pixDepth[r].data();
+                    const int rowOffset = r * cols;
+
+                    for (int c = 0; c < cols; ++c) {
+
+                        const int z = depthRow[c];
+                        const int pixelIndex = rowOffset + c;
 
                         pBuf[bufStart + (framenum % z)] = pSrc[pixelIndex];
+                        pOut[pixelIndex] = pBuf[bufStart + (framenum_plus1 % z)];
 
-                        pOut[pixelIndex] = pBuf[bufStart + ((framenum + 1) % z)];
-
-                        if(noise > 0.0 || auto_noise > 0.0){
-
-                            auto n = std::rand() % 100;
-               
-                            if( (n < noise) || (n < auto_noise) ){
-                                // inject some noise
-                                auto q = std::rand() % 256;
-                                pOut[pixelIndex] = cv::Vec3b( q, q, q);
-                            }
-                        }
-                        
                         bufStart += z;
+                    }
+                }
+
+                // Separate noise pass (only when needed)
+                if(doNoise){
+                    const int totalPixels = rows * cols;
+                    for (int i = 0; i < totalPixels; ++i) {
+                        if((std::rand() % 100) < noiseThreshold){
+                            const int q = std::rand() % 256;
+                            pOut[i] = cv::Vec3b(q, q, q);
+                        }
                     }
                 }
 
