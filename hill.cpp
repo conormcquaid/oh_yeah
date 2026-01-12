@@ -302,11 +302,14 @@ int main(int argc, char** argv) {
         cv::Vec3b* pSrc;
         cv::Vec3b* pBuf;
         cv::Vec3b* pOut;
+
+
         
         restart = false;
         // run a new algorithm or die
         while (!restart && !quit) {
 
+            // start of frame
             auto start_frame = std::chrono::high_resolution_clock::now();
             
             bufStart = 0;
@@ -334,9 +337,10 @@ int main(int argc, char** argv) {
                 exit(0);
             }
 #endif
-            cv::Vec3b* pSrc = frame.ptr<cv::Vec3b>(0);
-            cv::Vec3b* pBuf = lineBuffer.ptr<cv::Vec3b>(0);
-            cv::Vec3b* pOut = renderBuf.ptr<cv::Vec3b>(0);
+
+        cv::Vec3b* pSrc = frame.ptr<cv::Vec3b>(0);
+        cv::Vec3b* pBuf = lineBuffer.ptr<cv::Vec3b>(0);
+        cv::Vec3b* pOut = renderBuf.ptr<cv::Vec3b>(0);
 
             auto core_start = std::chrono::high_resolution_clock::now();
             // try to optimize out .at<> calls
@@ -539,6 +543,20 @@ int main(int argc, char** argv) {
                        
             once = true;
 
+            if(timeout != 0.0){
+                auto now =  std::chrono::steady_clock::now();
+                std::chrono::duration<double> elapsed_seconds = now - beginTimeout;
+                if(elapsed_seconds.count() >= timeout){
+                    // time to change algo
+                    restart = true;
+                    algorithm++;
+                    if(algorithm > N_ALGORITHMS) algorithm = 1;
+                    pEffOfEcksWye = algorithms[algorithm - 1];
+                    if(verbose) std::cout << "\nTimeout reached. Switching to algorithm " << algorithm << std::endl;
+                    lineBuffer.release();
+                }
+            }
+
             // calculate FPS
             static double FPS_A[16] = {0.0};
             static double core_A[16] = {0.0};
@@ -553,43 +571,31 @@ int main(int argc, char** argv) {
                 for(int i = 0; i < 16; i++) FPS += FPS_A[i];
                 FPS /= 16.0;
 
-                // std::chrono::duration<double, std::milli> core_duration = core_end - core_start;
-                // core_A[FPS_i % 16] = core_duration.count();
-                // double CORE = 0.0;
-                // for(int i = 0; i < 16; i++) CORE += core_A[i];
-                // CORE /= 16.0;
-                // //std::cout << " \t\t\tcore: " << CORE << std::flush; ;
+                std::chrono::duration<double, std::milli> core_duration = core_end - core_start;
+                core_A[FPS_i % 16] = core_duration.count();
+                double CORE = 0.0;
+                for(int i = 0; i < 16; i++) CORE += core_A[i];
+                CORE /= 16.0;
+                //std::cout << " \t\t\tcore: " << CORE << std::flush; ;
 
-                // std::chrono::duration<double, std::milli> render_duration = end_render - start_render;
-                // render_A[FPS_i % 16] = render_duration.count();
-                // double RENDER = 0.0;
-                // for(int i = 0; i < 16; i++) RENDER += render_A[i];
-                // RENDER /= 16.0;
+                std::chrono::duration<double, std::milli> render_duration = end_render - start_render;
+                render_A[FPS_i % 16] = render_duration.count();
+                double RENDER = 0.0;
+                for(int i = 0; i < 16; i++) RENDER += render_A[i];
+                RENDER /= 16.0;
 
                 if(framenum < 16){
                     FPS = 1000;
                 }
 
                  std::cout << "\r[" << framenum << "]\t\tFPS: "<< std::fixed << std::setprecision(0)  << 1000/FPS  
-                //                                 <<"  Loop: "<< FPS 
-                //                                 << " Core [" << std::fixed << std::setprecision(0) << CORE 
-                //                                 <<"] render["<< std::fixed << std::setprecision(0) << RENDER << "]"
+                                                 <<"  Loop: "<< FPS 
+                                                 << " Core [" << std::fixed << std::setprecision(0) << CORE 
+                                                 <<"] render["<< std::fixed << std::setprecision(0) << RENDER << "]"
                                                  << std::flush;
             }
 
-            if(timeout != 0.0){
-                auto now =  std::chrono::steady_clock::now();
-                std::chrono::duration<double> elapsed_seconds = now - beginTimeout;
-                if(elapsed_seconds.count() >= timeout){
-                    // time to change algo
-                    restart = true;
-                    algorithm++;
-                    if(algorithm > N_ALGORITHMS) algorithm = 1;
-                    pEffOfEcksWye = algorithms[algorithm - 1];
-                    if(verbose) std::cout << "\nTimeout reached. Switching to algorithm " << algorithm << std::endl;
-                    lineBuffer.release();
-                }
-            }
+            
         }// end while restart
     }// end while restart
 
@@ -663,10 +669,14 @@ int algo_perlin(int r, int c, int depth_param, double variation){
     double scale = 0.009;
     int octaves = 1;
     static double persistence = 0.999;
-
-    std::srand(std::time(0)); // Seed the generator once
-    static siv::PerlinNoise::seed_type seed = std::rand() % 1000;
+    static siv::PerlinNoise::seed_type seed = std::rand() % 1000;;
     static siv::PerlinNoise perlin{ seed };
+
+    // if( r == 0 && c == 0){
+    //     std::srand(std::time(0)); // Seed the generator once
+    //     seed = std::rand() % 1000;
+    //     perlin;
+    // }
 
     if(abs(persistence - variation) > 0.0001){
         // new algo

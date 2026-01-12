@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.5)
 
-set(CMAKE_BUILD_TYPE Debug)
-#set(CMAKE_BUILD_TYPE Release)
+#set(CMAKE_BUILD_TYPE Debug)
+set(CMAKE_BUILD_TYPE Release)
 
 project( fast1 )
 find_package( OpenCV REQUIRED )
-include_directories( ${OpenCV_INCLUDE_DIRS} )
+include_directories( ${OpenCV_INCLUDE_DIRS} ./ )
 
 option(BUILD_DEVELOP "Building all the things" OFF)
 
@@ -31,5 +31,5 @@ if(BUILD_DEVELOP)
 endif()
 
 
-add_executable( slowglass    hill.cpp )
+add_executable( slowglass    hill.cpp PerlinNoise.hpp)
 target_link_libraries( slowglass  ${OpenCV_LIBS} )
