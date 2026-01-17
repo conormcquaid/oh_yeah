@@ -31,5 +31,7 @@ if(BUILD_DEVELOP)
 endif()
 
 
+find_package( OpenMP REQUIRED )
+
 add_executable( slowglass    hill.cpp PerlinNoise.hpp)
-target_link_libraries( slowglass  ${OpenCV_LIBS} )
+target_link_libraries( slowglass  ${OpenCV_LIBS} OpenMP::OpenMP_CXX )

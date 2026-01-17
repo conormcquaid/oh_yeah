@@ -16,6 +16,7 @@
 #include <mutex>
 #include <atomic>
 #include <cfloat> // For FLT_MAX
+#include <omp.h>
 #include "PerlinNoise.hpp"
 
 
@@ -58,6 +59,7 @@ double   variation = 0.0;
 double timeout = 0.0;
 double noise   = 0.0;
 double auto_noise   = 0.0;
+bool   useOpenCL = false;  // disabled by default - often slower for small ops
 std::string  video_device_name = "/dev/video0";
 
 
@@ -177,12 +179,17 @@ int main(int argc, char** argv) {
     }
 
     // Check for OpenCL/GPU availability
-    cv::ocl::setUseOpenCL(true);
-    bool haveGpu = cv::ocl::haveOpenCL();
-    if(haveGpu){
-        if(verbose) std::cout << "OpenCL available: " << cv::ocl::Device::getDefault().name() << std::endl;
+    bool haveGpu = false;
+    if(useOpenCL && cv::ocl::haveOpenCL()){
+        cv::ocl::setUseOpenCL(true);
+        haveGpu = true;
+        if(verbose) std::cout << "OpenCL enabled: " << cv::ocl::Device::getDefault().name() << std::endl;
     }else{
-        if(verbose) std::cout << "OpenCL not available, using CPU" << std::endl;
+        cv::ocl::setUseOpenCL(false);
+        if(verbose){
+            if(useOpenCL) std::cout << "OpenCL requested but not available" << std::endl;
+            else std::cout << "OpenCL disabled (use -G to enable)" << std::endl;
+        }
     }
 
     // where the raw cam data will go...
@@ -219,8 +226,10 @@ int main(int argc, char** argv) {
     //attach mouse handler to main window
     //cv::setMouseCallback("hill", mouse_callback, NULL);
 
-    // 
+    //
     std::vector<std::vector<int>> pixDepth(frame.rows, std::vector<int>(frame.cols));
+    // Pre-computed buffer offsets for parallel processing
+    std::vector<int> bufOffset(frame.rows * frame.cols);
 
 #ifdef USE_CAPTURE_THREAD
     // producer thread
@@ -244,18 +253,22 @@ int main(int argc, char** argv) {
         std::srand(std::time(0));
         variation = std::rand() % 1024 / 1024.0;
 
-        // get buffer size and memoize depth function
+        // get buffer size and memoize depth function + buffer offsets
         int depthMaxEmpirical = 0;
-        for(int c = 0; c < frame.cols; c++){
-
-            for(int r = 0; r < frame.rows; r++){
-
-                int d = pEffOfEcksWye(r,c, param, variation);
+        int offset = 0;
+        const int cols = frame.cols;
+        const int rows = frame.rows;
+        for(int r = 0; r < rows; r++){
+            for(int c = 0; c < cols; c++){
+                int d = pEffOfEcksWye(r, c, param, variation);
                 depthMaxEmpirical = (d > depthMaxEmpirical) ? d : depthMaxEmpirical;
                 if(d < 1) d = 1; // algorithms should already take care of this
-                bufSize += d; 
+                bufSize += d;
                 // cache depth calculation
                 pixDepth[r][c] = d;
+                // pre-compute buffer offset for parallel access
+                bufOffset[r * cols + c] = offset;
+                offset += d;
             }
         }
         // now we can scale thumbnail grayscale
@@ -364,8 +377,10 @@ int main(int argc, char** argv) {
                 const int framenum_plus1 = framenum + 1;
                 const bool doNoise = (noise > 0.0 || auto_noise > 0.0);
                 const int noiseThreshold = static_cast<int>(std::max(noise, auto_noise));
+                const int* __restrict__ pOffset = bufOffset.data();
 
-                // Row-major iteration for cache locality
+                // Parallel row-major iteration using pre-computed offsets
+                #pragma omp parallel for schedule(static)
                 for (int r = 0; r < rows; ++r) {
 
                     const int* __restrict__ depthRow = pixDepth[r].data();
@@ -375,20 +390,24 @@ int main(int argc, char** argv) {
 
                         const int z = depthRow[c];
                         const int pixelIndex = rowOffset + c;
+                        const int bufIdx = pOffset[pixelIndex];
 
-                        pBuf[bufStart + (framenum % z)] = pSrc[pixelIndex];
-                        pOut[pixelIndex] = pBuf[bufStart + (framenum_plus1 % z)];
-
-                        bufStart += z;
+                        pBuf[bufIdx + (framenum % z)] = pSrc[pixelIndex];
+                        pOut[pixelIndex] = pBuf[bufIdx + (framenum_plus1 % z)];
                     }
                 }
 
                 // Separate noise pass (only when needed)
                 if(doNoise){
                     const int totalPixels = rows * cols;
+                    #pragma omp parallel for schedule(static)
                     for (int i = 0; i < totalPixels; ++i) {
-                        if((std::rand() % 100) < noiseThreshold){
-                            const int q = std::rand() % 256;
+                        // Use thread-local random - xorshift is fast
+                        thread_local unsigned int seed = omp_get_thread_num() + 1;
+                        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+                        if((seed % 100) < static_cast<unsigned>(noiseThreshold)){
+                            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+                            const int q = seed % 256;
                             pOut[i] = cv::Vec3b(q, q, q);
                         }
                     }
@@ -424,29 +443,32 @@ int main(int argc, char** argv) {
             //     1: Flips the image horizontally (around the y-axis), creating a mirror effect.
             //    -1: Flips the image both horizontally and vertically (equivalent to a 180-degree rotation).
 
-            // Upload to GPU and do post-processing there
-            renderBuf.copyTo(renderGpu);
-
-            if(mirrorHorizontal){
-                cv::flip(renderGpu, renderGpu, 1);
-            }
-            if(mirrorVertical){
-                cv::flip(renderGpu, renderGpu, 0);
-            }
-
             cv::Size outputSize( dispWidth, dispHeight);
-            cv::resize(renderGpu, finalGpu, outputSize);
-
-            //TODO: apply filtering here? or before resizing?
-            // int f = depthMax / 2;
-            // f = (f % 2 == 0) ? f+1 : f;
             int f = 2 * (filterOption) + 1; // 0=>1, 1=>3, 2=>5, etc
 
-            if(filterOption){
-                cv::GaussianBlur(finalGpu, finalGpu, cv::Size(f, f), 0);
-            }
+            if(haveGpu){
+                // GPU path
+                renderBuf.copyTo(renderGpu);
 
-            cv::imshow("slow glass", finalGpu);
+                if(mirrorHorizontal) cv::flip(renderGpu, renderGpu, 1);
+                if(mirrorVertical)   cv::flip(renderGpu, renderGpu, 0);
+
+                cv::resize(renderGpu, finalGpu, outputSize);
+
+                if(filterOption) cv::GaussianBlur(finalGpu, finalGpu, cv::Size(f, f), 0);
+
+                cv::imshow("slow glass", finalGpu);
+            }else{
+                // CPU path
+                if(mirrorHorizontal) cv::flip(renderBuf, renderBuf, 1);
+                if(mirrorVertical)   cv::flip(renderBuf, renderBuf, 0);
+
+                cv::resize(renderBuf, final, outputSize);
+
+                if(filterOption) cv::GaussianBlur(final, final, cv::Size(f, f), 0);
+
+                cv::imshow("slow glass", final);
+            }
 
             if(debugWindow){
                 cv::imshow("debug", frame);
@@ -845,6 +867,7 @@ void usage(void){
     std::cout << "-v\tVerbose" << std::endl;
     std::cout << "-n\tName of input device. Defaults to /dev/video0" << std::endl;
     std::cout << "-g\tShow debug window (raw camera feed)" << std::endl;
+    std::cout << "-G\tEnable OpenCL/GPU acceleration (disabled by default)" << std::endl;
     std::cout << "-d\tSet maximum pixel history depth [1-254]" << std::endl;
     std::cout << "-w\tSet camera width" << std::endl;
     std::cout << "-h\tSet camera height" << std::endl;
@@ -891,7 +914,7 @@ void load_options(int argc, char** argv){
         usage();
     }
 
-    while((opt = getopt(argc, argv, "a:gvd:w:W:h:H:f:p:n:t:mM")) != -1){
+    while((opt = getopt(argc, argv, "a:gGvd:w:W:h:H:f:p:n:t:mM")) != -1){
         switch(opt){
 
             case 'v':
@@ -951,6 +974,10 @@ void load_options(int argc, char** argv){
 
             case 'g':
             debugWindow = true;
+            break;
+
+            case 'G':
+            useOpenCL = true;
             break;
 
             case 'm':
