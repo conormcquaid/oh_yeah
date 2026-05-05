@@ -234,6 +234,7 @@ int main(int argc, char** argv) {
 
     //
     std::vector<std::vector<int>> pixDepth(frame.rows, std::vector<int>(frame.cols));
+    std::vector<int> bufOffset(frame.rows * frame.cols);
 
 #ifdef USE_CAPTURE_THREAD
     // producer thread
@@ -257,21 +258,34 @@ int main(int argc, char** argv) {
         std::srand(std::time(0));
         variation = std::rand() % 1024 / 1024.0;
 
+        // algorithms whose depth spans the full image dimension bypass the depthMax cap
+        const bool useVariableStride = (pEffOfEcksWye == algo_OG_param      ||
+                                        pEffOfEcksWye == algo_bottom_up      ||
+                                        pEffOfEcksWye == algo_left_to_right  ||
+                                        pEffOfEcksWye == algo_right_to_left);
+
         // get buffer size and memoize depth function
         int depthMaxEmpirical = 0;
         const int cols = frame.cols;
         const int rows = frame.rows;
+        int offset = 0;
         for(int r = 0; r < rows; r++){
             for(int c = 0; c < cols; c++){
                 int d = pEffOfEcksWye(r, c, param, variation);
                 depthMaxEmpirical = (d > depthMaxEmpirical) ? d : depthMaxEmpirical;
                 if(d < 1) d = 1;
-                if(d > depthMax) d = depthMax; // clamp to stride width
+                if(!useVariableStride && d > depthMax) d = depthMax;
                 pixDepth[r][c] = d;
+                if(useVariableStride){
+                    bufOffset[r * cols + c] = offset;
+                    offset += d;
+                }
             }
         }
-        // uniform stride: every pixel gets depthMax slots, offset = pixelIndex * depthMax
-        bufSize = (size_t)rows * cols * depthMax;
+        if(useVariableStride)
+            bufSize = offset;
+        else
+            bufSize = (size_t)rows * cols * depthMax;
         // now we can scale thumbnail grayscale
         for(int c = 0; c < frame.cols; c++){
             for(int r = 0; r < frame.rows; r++){
@@ -373,21 +387,34 @@ int main(int argc, char** argv) {
                 const int framenum_plus1 = framenum + 1;
                 const bool doNoise = (noise > 0.0 || auto_noise > 0.0);
                 const int noiseThreshold = static_cast<int>(std::max(noise, auto_noise));
-                // Parallel row-major iteration with uniform stride (no offset lookup)
-                #pragma omp parallel for schedule(static)
-                for (int r = 0; r < rows; ++r) {
-
-                    const int* __restrict__ depthRow = pixDepth[r].data();
-                    const int rowOffset = r * cols;
-
-                    for (int c = 0; c < cols; ++c) {
-
-                        const int z = depthRow[c];
-                        const int pixelIndex = rowOffset + c;
-                        const int bufIdx = pixelIndex * depthMax;
-
-                        pBuf[bufIdx + (framenum % z)] = pSrc[pixelIndex];
-                        pOut[pixelIndex] = pBuf[bufIdx + (framenum_plus1 % z)];
+                const int* __restrict__ pOffset = bufOffset.data();
+                if(useVariableStride){
+                    // Variable-stride: each pixel's ring buffer starts at pOffset[pixelIndex]
+                    #pragma omp parallel for schedule(static)
+                    for (int r = 0; r < rows; ++r) {
+                        const int* __restrict__ depthRow = pixDepth[r].data();
+                        const int rowOffset = r * cols;
+                        for (int c = 0; c < cols; ++c) {
+                            const int z = depthRow[c];
+                            const int pixelIndex = rowOffset + c;
+                            const int bufIdx = pOffset[pixelIndex];
+                            pBuf[bufIdx + (framenum % z)] = pSrc[pixelIndex];
+                            pOut[pixelIndex] = pBuf[bufIdx + (framenum_plus1 % z)];
+                        }
+                    }
+                } else {
+                    // Uniform stride: O(1) index with no offset lookup
+                    #pragma omp parallel for schedule(static)
+                    for (int r = 0; r < rows; ++r) {
+                        const int* __restrict__ depthRow = pixDepth[r].data();
+                        const int rowOffset = r * cols;
+                        for (int c = 0; c < cols; ++c) {
+                            const int z = depthRow[c];
+                            const int pixelIndex = rowOffset + c;
+                            const int bufIdx = pixelIndex * depthMax;
+                            pBuf[bufIdx + (framenum % z)] = pSrc[pixelIndex];
+                            pOut[pixelIndex] = pBuf[bufIdx + (framenum_plus1 % z)];
+                        }
                     }
                 }
 
@@ -422,7 +449,7 @@ int main(int argc, char** argv) {
                         // pull older pixel
                         renderBuf.at<cv::Vec3b>(r,c) = lineBuffer.at<cv::Vec3b>(bufStart + ((framenum + 1)% z), 0);
 
-                        bufStart += depthMax;
+                        bufStart += (useVariableStride ? z : depthMax);
                     }
                 }
             }
