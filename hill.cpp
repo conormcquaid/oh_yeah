@@ -11,10 +11,10 @@
 #include <filesystem>
 #include <bitset>
 #include <string>
-#include <queue>
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <condition_variable>
 #include <cfloat> // For FLT_MAX
 #include <omp.h>
 #include "PerlinNoise.hpp"
@@ -60,6 +60,7 @@ double timeout = 0.0;
 double noise   = 0.0;
 double auto_noise   = 0.0;
 bool   useOpenCL = false;  // disabled by default - often slower for small ops
+bool   useYUYV   = false;  // MJPG default; YUYV avoids libjpeg but limits fps at high res
 std::string  video_device_name = "/dev/video0";
 
 
@@ -114,23 +115,25 @@ EffOfEcksWye algorithms[N_ALGORITHMS]={
     algo_spiral
 };
 
-#ifdef USE_CAPTURE_THREAD   
-// video capture thread
+#ifdef USE_CAPTURE_THREAD
+// video capture thread — condition variable, single pending slot
 std::atomic_bool stop_flag(false);
-std::queue<cv::Mat> frame_queue;
+cv::Mat pending_frame;
 std::mutex mtx;
+std::condition_variable frame_cv;
+bool frame_ready = false;
 
 void captureTask(cv::VideoCapture& cap){
     cv::Mat frame;
     while(!stop_flag.load() && cap.isOpened()){
         cap >> frame;
         if(frame.empty()){ break; }
-        std::lock_guard<std::mutex> lock(mtx);
-
-        // queue can grow arbitrarily large if rendering is slower than capture
-        if(frame_queue.size() < 5){
-            frame_queue.push(frame.clone());
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            pending_frame = std::move(frame);
+            frame_ready = true;
         }
+        frame_cv.notify_one();
     }
 }
 #endif
@@ -163,7 +166,10 @@ int main(int argc, char** argv) {
 
     // set webcam resolution
     // TODO: be aware that this may not be supported by the camera
-    cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J','P', 'G'));
+    if(useYUYV)
+        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('Y', 'U', 'Y', 'V'));
+    else
+        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
     cap.set(cv::CAP_PROP_FRAME_WIDTH,  camWidth);
     cap.set(cv::CAP_PROP_FRAME_HEIGHT, camHeight); 
     cap.set(cv::CAP_PROP_FPS, 30);
@@ -228,8 +234,6 @@ int main(int argc, char** argv) {
 
     //
     std::vector<std::vector<int>> pixDepth(frame.rows, std::vector<int>(frame.cols));
-    // Pre-computed buffer offsets for parallel processing
-    std::vector<int> bufOffset(frame.rows * frame.cols);
 
 #ifdef USE_CAPTURE_THREAD
     // producer thread
@@ -253,24 +257,21 @@ int main(int argc, char** argv) {
         std::srand(std::time(0));
         variation = std::rand() % 1024 / 1024.0;
 
-        // get buffer size and memoize depth function + buffer offsets
+        // get buffer size and memoize depth function
         int depthMaxEmpirical = 0;
-        int offset = 0;
         const int cols = frame.cols;
         const int rows = frame.rows;
         for(int r = 0; r < rows; r++){
             for(int c = 0; c < cols; c++){
                 int d = pEffOfEcksWye(r, c, param, variation);
                 depthMaxEmpirical = (d > depthMaxEmpirical) ? d : depthMaxEmpirical;
-                if(d < 1) d = 1; // algorithms should already take care of this
-                bufSize += d;
-                // cache depth calculation
+                if(d < 1) d = 1;
+                if(d > depthMax) d = depthMax; // clamp to stride width
                 pixDepth[r][c] = d;
-                // pre-compute buffer offset for parallel access
-                bufOffset[r * cols + c] = offset;
-                offset += d;
             }
         }
+        // uniform stride: every pixel gets depthMax slots, offset = pixelIndex * depthMax
+        bufSize = (size_t)rows * cols * depthMax;
         // now we can scale thumbnail grayscale
         for(int c = 0; c < frame.cols; c++){
             for(int r = 0; r < frame.rows; r++){
@@ -283,7 +284,7 @@ int main(int argc, char** argv) {
         cv::imshow("Thumbnail", thumbnail);
 
 
-        cv::Mat lineBuffer(bufSize + depthMax + depthMax, 1, mtype); //pair with lineBuffer.release()
+        cv::Mat lineBuffer(bufSize, 1, mtype);
 
         //TODO: grab _actual_ camera dimensions
         camWidth = cap.get(cv::CAP_PROP_FRAME_WIDTH);
@@ -344,16 +345,11 @@ int main(int argc, char** argv) {
 
 #ifdef USE_CAPTURE_THREAD
             {
-                // avoid blocking capture 
-                std::lock_guard<std::mutex> lock(mtx);
-                if(!frame_queue.empty()){
-                    frame = frame_queue.front();
-                    frame_queue.pop();
-                }else{
-                    // no new frame, skip processing
-                    //if(verbose) std::cout << "No new frame available" << std::endl;
-                    continue;
-                }
+                std::unique_lock<std::mutex> lock(mtx);
+                frame_cv.wait(lock, []{ return frame_ready || stop_flag.load(); });
+                if(!frame_ready) continue;
+                frame = std::move(pending_frame);
+                frame_ready = false;
             }
 #else           
             // this code blocks until a frame is captured
@@ -377,9 +373,7 @@ int main(int argc, char** argv) {
                 const int framenum_plus1 = framenum + 1;
                 const bool doNoise = (noise > 0.0 || auto_noise > 0.0);
                 const int noiseThreshold = static_cast<int>(std::max(noise, auto_noise));
-                const int* __restrict__ pOffset = bufOffset.data();
-
-                // Parallel row-major iteration using pre-computed offsets
+                // Parallel row-major iteration with uniform stride (no offset lookup)
                 #pragma omp parallel for schedule(static)
                 for (int r = 0; r < rows; ++r) {
 
@@ -390,7 +384,7 @@ int main(int argc, char** argv) {
 
                         const int z = depthRow[c];
                         const int pixelIndex = rowOffset + c;
-                        const int bufIdx = pOffset[pixelIndex];
+                        const int bufIdx = pixelIndex * depthMax;
 
                         pBuf[bufIdx + (framenum % z)] = pSrc[pixelIndex];
                         pOut[pixelIndex] = pBuf[bufIdx + (framenum_plus1 % z)];
@@ -428,7 +422,7 @@ int main(int argc, char** argv) {
                         // pull older pixel
                         renderBuf.at<cv::Vec3b>(r,c) = lineBuffer.at<cv::Vec3b>(bufStart + ((framenum + 1)% z), 0);
 
-                        bufStart += z;
+                        bufStart += depthMax;
                     }
                 }
             }
@@ -868,6 +862,7 @@ void usage(void){
     std::cout << "-n\tName of input device. Defaults to /dev/video0" << std::endl;
     std::cout << "-g\tShow debug window (raw camera feed)" << std::endl;
     std::cout << "-G\tEnable OpenCL/GPU acceleration (disabled by default)" << std::endl;
+    std::cout << "-Y\tUse YUYV capture format instead of MJPG (no libjpeg decode, but lower fps at high resolution)" << std::endl;
     std::cout << "-d\tSet maximum pixel history depth [1-254]" << std::endl;
     std::cout << "-w\tSet camera width" << std::endl;
     std::cout << "-h\tSet camera height" << std::endl;
@@ -914,7 +909,7 @@ void load_options(int argc, char** argv){
         usage();
     }
 
-    while((opt = getopt(argc, argv, "a:gGvd:w:W:h:H:f:p:n:t:mM")) != -1){
+    while((opt = getopt(argc, argv, "a:gGYvd:w:W:h:H:f:p:n:t:mM")) != -1){
         switch(opt){
 
             case 'v':
@@ -978,6 +973,10 @@ void load_options(int argc, char** argv){
 
             case 'G':
             useOpenCL = true;
+            break;
+
+            case 'Y':
+            useYUYV = true;
             break;
 
             case 'm':
